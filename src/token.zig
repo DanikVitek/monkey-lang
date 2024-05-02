@@ -1,8 +1,6 @@
 pub const Token = union(enum) {
     /// illegal token/character
     illegal: []const u8,
-    /// end of file
-    eof,
 
     // identifiers + literals
     /// names for variables, functions, etc.

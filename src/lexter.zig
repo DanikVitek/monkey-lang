@@ -1,8 +1,7 @@
 const std = @import("std");
 const ComptimeStringMap = std.ComptimeStringMap;
 
-const token = @import("token.zig");
-const Token = token.Token;
+const Token = @import("token.zig").Token;
 
 const testing = std.testing;
 
@@ -19,10 +18,10 @@ pub const Lexer = struct {
         };
     }
 
-    pub fn nextToken(self: *Lexer) Token {
+    pub fn nextToken(self: *Lexer) ?Token {
         self.skipWhitespace();
 
-        return switch (self.readChar() orelse return .eof) {
+        return switch (self.readChar() orelse return null) {
             '+' => .plus,
             '-' => .minus,
             '*' => .star,
@@ -159,7 +158,7 @@ test "next token" {
         \\!-5 < 10 > 5 / 2 * 1
     ;
 
-    const tests = [_]Token{
+    const tests = [_]?Token{
         .let,
         .{ .ident = "five" },
         .assign,
@@ -268,7 +267,7 @@ test "next token" {
         .{ .int = "2" },
         .star,
         .{ .int = "1" },
-        .eof,
+        null,
     };
 
     var lexer = Lexer.init(input) catch unreachable;
@@ -276,7 +275,7 @@ test "next token" {
     inline for (0.., tests) |i, expected| {
         const tok = lexer.nextToken();
         testing.expectEqualDeep(expected, tok) catch |err| switch (err) {
-            error.TestExpectedEqual => std.debug.panic("[test #{d}] actual: {}", .{ i, tok }),
+            error.TestExpectedEqual => std.debug.panic("[test #{d}] actual: {?}", .{ i, tok }),
         };
     }
 }
