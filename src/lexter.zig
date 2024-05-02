@@ -6,7 +6,7 @@ const Token = token.Token;
 
 const testing = std.testing;
 
-const Lexer = struct {
+pub const Lexer = struct {
     /// current position in input (points to current char)
     position: usize,
     /// iterator over the utf8 codepoints
@@ -100,19 +100,14 @@ const Lexer = struct {
 
 fn isWhitespace(char: ?u21) bool {
     return switch (char orelse return false) {
-        ' ' => true,
-        '\t' => true,
-        '\r' => true,
-        '\n' => true,
+        ' ', '\t', '\r', '\n' => true,
         else => false,
     };
 }
 
 fn isLetter(char: ?u21) bool {
     return switch (char orelse return false) {
-        'a'...'z' => true,
-        'A'...'Z' => true,
-        '_' => true,
+        'a'...'z', 'A'...'Z', '_' => true,
         else => false,
     };
 }
