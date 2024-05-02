@@ -32,12 +32,12 @@ const Lexer = struct {
             '}' => .rbrace,
             else => |ch| if (isLetter(ch)) blk: {
                 const start = self.position;
-                const end = self.skipIdentifier();
+                const end = self.endOfIdentifier();
                 const literal = self.utf8.bytes[start..end];
                 break :blk fromIdentifier(literal);
             } else if (isDigit(ch)) blk: {
                 const start = self.position;
-                const end = self.skipInt();
+                const end = self.endOfInt();
                 const literal = self.utf8.bytes[start..end];
                 break :blk .{ .int = literal };
             } else blk: {
@@ -64,14 +64,14 @@ const Lexer = struct {
         }
     }
 
-    fn skipIdentifier(self: *Lexer) usize {
+    fn endOfIdentifier(self: *Lexer) usize {
         while (isLetter(self.peekChar())) {
             _ = self.readChar();
         }
         return self.utf8.i;
     }
 
-    fn skipInt(self: *Lexer) usize {
+    fn endOfInt(self: *Lexer) usize {
         while (isDigit(self.peekChar())) {
             _ = self.readChar();
         }
