@@ -1,4 +1,5 @@
 const std = @import("std");
+const ComptimeStringMap = std.ComptimeStringMap;
 
 const token = @import("token.zig");
 const Token = token.Token;
@@ -22,14 +23,32 @@ const Lexer = struct {
         self.skipWhitespace();
 
         return switch (self.readChar() orelse return .eof) {
-            '=' => .assign,
             '+' => .plus,
+            '-' => .minus,
+            '*' => .star,
+            '/' => .slash,
             ',' => .comma,
             ';' => .semicolon,
             '(' => .lparen,
             ')' => .rparen,
             '{' => .lbrace,
             '}' => .rbrace,
+            '=' => if (self.peekChar() == '=') blk: {
+                _ = self.readChar();
+                break :blk .eq;
+            } else .assign,
+            '!' => if (self.peekChar() == '=') blk: {
+                _ = self.readChar();
+                break :blk .neq;
+            } else .bang,
+            '<' => if (self.peekChar() == '=') blk: {
+                _ = self.readChar();
+                break :blk .leq;
+            } else .lt,
+            '>' => if (self.peekChar() == '=') blk: {
+                _ = self.readChar();
+                break :blk .geq;
+            } else .gt,
             else => |ch| if (isLetter(ch)) blk: {
                 const start = self.position;
                 const end = self.endOfIdentifier();
@@ -105,24 +124,38 @@ fn isDigit(char: ?u21) bool {
     };
 }
 
+const Keywords = ComptimeStringMap(Token, .{
+    .{ "fn", .function },
+    .{ "let", .let },
+    .{ "true", .true },
+    .{ "false", .false },
+    .{ "if", .@"if" },
+    .{ "else", .@"else" },
+    .{ "return", .@"return" },
+});
+
 fn fromIdentifier(literal: []const u8) Token {
-    if (std.mem.eql(u8, "fn", literal)) return .function;
-    if (std.mem.eql(u8, "let", literal)) return .let;
-    return .{ .ident = literal };
+    return Keywords.get(literal) orelse .{ .ident = literal };
 }
 
 test "next token" {
-    const input = "=+(){},;";
+    const input = "=+-*/!(){},;<>";
 
     const tests = [_]Token{
         .assign,
         .plus,
+        .minus,
+        .star,
+        .slash,
+        .bang,
         .lparen,
         .rparen,
         .lbrace,
         .rbrace,
         .comma,
         .semicolon,
+        .lt,
+        .gt,
         .eof,
     };
 
@@ -144,6 +177,19 @@ test "next token from source" {
         \\};
         \\
         \\let result = add(five, ten);
+        \\
+        \\let assert = fn(cond) {
+        \\  if (cond) true else false
+        \\};
+        \\
+        \\let assertNot = fn(cond) {
+        \\  return !assert(cond);
+        \\};
+        \\
+        \\assert(five <= ten);
+        \\assert(five != ten);
+        \\assertNot(five == ten);
+        \\assertNot(five >= ten);
     ;
 
     const tests = [_]Token{
@@ -179,6 +225,68 @@ test "next token from source" {
         .lparen,
         .{ .ident = "five" },
         .comma,
+        .{ .ident = "ten" },
+        .rparen,
+        .semicolon,
+        .let,
+        .{ .ident = "assert" },
+        .assign,
+        .function,
+        .lparen,
+        .{ .ident = "cond" },
+        .rparen,
+        .lbrace,
+        .@"if",
+        .lparen,
+        .{ .ident = "cond" },
+        .rparen,
+        .true,
+        .@"else",
+        .false,
+        .rbrace,
+        .semicolon,
+        .let,
+        .{ .ident = "assertNot" },
+        .assign,
+        .function,
+        .lparen,
+        .{ .ident = "cond" },
+        .rparen,
+        .lbrace,
+        .@"return",
+        .bang,
+        .{ .ident = "assert" },
+        .lparen,
+        .{ .ident = "cond" },
+        .rparen,
+        .semicolon,
+        .rbrace,
+        .semicolon,
+        .{ .ident = "assert" },
+        .lparen,
+        .{ .ident = "five" },
+        .leq,
+        .{ .ident = "ten" },
+        .rparen,
+        .semicolon,
+        .{ .ident = "assert" },
+        .lparen,
+        .{ .ident = "five" },
+        .neq,
+        .{ .ident = "ten" },
+        .rparen,
+        .semicolon,
+        .{ .ident = "assertNot" },
+        .lparen,
+        .{ .ident = "five" },
+        .eq,
+        .{ .ident = "ten" },
+        .rparen,
+        .semicolon,
+        .{ .ident = "assertNot" },
+        .lparen,
+        .{ .ident = "five" },
+        .geq,
         .{ .ident = "ten" },
         .rparen,
         .semicolon,

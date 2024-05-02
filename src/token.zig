@@ -15,6 +15,26 @@ pub const Token = union(enum) {
     assign,
     /// `+`
     plus,
+    /// `-`
+    minus,
+    /// `*`
+    star,
+    /// `/`
+    slash,
+    /// `<`
+    lt,
+    /// `>`
+    gt,
+    /// `!`
+    bang,
+    /// `<=`
+    leq,
+    /// `>=`
+    geq,
+    /// `==`
+    eq,
+    /// `!=`
+    neq,
 
     // delimiters
     /// `,`
@@ -36,4 +56,14 @@ pub const Token = union(enum) {
     function,
     /// `let`
     let,
+    /// `true`
+    true,
+    /// `false`
+    false,
+    /// `if`
+    @"if",
+    /// `else`
+    @"else",
+    /// `return`
+    @"return",
 };
