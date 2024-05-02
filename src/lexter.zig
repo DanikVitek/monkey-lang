@@ -139,35 +139,6 @@ fn fromIdentifier(literal: []const u8) Token {
 }
 
 test "next token" {
-    const input = "=+-*/!(){},;<>";
-
-    const tests = [_]Token{
-        .assign,
-        .plus,
-        .minus,
-        .star,
-        .slash,
-        .bang,
-        .lparen,
-        .rparen,
-        .lbrace,
-        .rbrace,
-        .comma,
-        .semicolon,
-        .lt,
-        .gt,
-        .eof,
-    };
-
-    var lexer = Lexer.init(input) catch unreachable;
-
-    inline for (tests) |expected| {
-        const tok = lexer.nextToken();
-        try testing.expectEqual(expected, tok);
-    }
-}
-
-test "next token from source" {
     const input =
         \\let five = 5;
         \\let ten = 10;
@@ -190,6 +161,7 @@ test "next token from source" {
         \\assert(five != ten);
         \\assertNot(five == ten);
         \\assertNot(five >= ten);
+        \\!-5 < 10 > 5 / 2 * 1
     ;
 
     const tests = [_]Token{
@@ -290,6 +262,17 @@ test "next token from source" {
         .{ .ident = "ten" },
         .rparen,
         .semicolon,
+        .bang,
+        .minus,
+        .{ .int = "5" },
+        .lt,
+        .{ .int = "10" },
+        .gt,
+        .{ .int = "5" },
+        .slash,
+        .{ .int = "2" },
+        .star,
+        .{ .int = "1" },
         .eof,
     };
 
