@@ -15,8 +15,11 @@ pub fn start(in: Reader, out: Writer, allocator: Allocator) !void {
     while (true) {
         defer buf.clearRetainingCapacity();
         try out.writeAll(PROMPT);
+
         try streamUntilEof(in, buf.writer(), '\n');
-        var lexer = try Lexer.init(buf.items);
+        const input = std.mem.trimRight(u8, buf.items, "\r");
+
+        var lexer = try Lexer.init(input);
         while (lexer.nextToken()) |tok| {
             try std.fmt.format(out, "{}\n", .{tok});
         }
@@ -31,7 +34,7 @@ fn streamUntilEof(
     while (true) {
         const byte: u8 = self.readByte() catch |err| switch (err) {
             error.EndOfStream => return,
-            else => return err,
+            else => return @as(Reader.Error, @errorCast(err)),
         };
         if (byte == delimiter) return;
         try writer.writeByte(byte);

@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const Token = union(enum) {
     /// illegal token/character
     illegal: []const u8,
@@ -64,4 +66,15 @@ pub const Token = union(enum) {
     @"else",
     /// `return`
     @"return",
+
+    pub fn format(value: Token, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = options;
+        switch (value) {
+            .illegal => |lit| try std.fmt.format(writer, ".{{ .illegal = {s} }}", .{lit}),
+            .ident => |lit| try std.fmt.format(writer, ".{{ .ident = {s} }}", .{lit}),
+            .int => |lit| try std.fmt.format(writer, ".{{ .int = {s} }}", .{lit}),
+            else => try std.fmt.format(writer, ".{s}", .{@tagName(value)}),
+        }
+    }
 };

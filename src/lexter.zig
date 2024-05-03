@@ -48,7 +48,7 @@ pub const Lexer = struct {
                 _ = self.readChar();
                 break :blk .geq;
             } else .gt,
-            else => |ch| if (isLetter(ch)) blk: {
+            else => |ch| if (isIdentStart(ch)) blk: {
                 const start = self.position;
                 const end = self.endOfIdentifier();
                 const literal = self.utf8.bytes[start..end];
@@ -83,7 +83,7 @@ pub const Lexer = struct {
     }
 
     fn endOfIdentifier(self: *Lexer) usize {
-        while (isLetter(self.peekChar())) {
+        while (isIdentContinue(self.peekChar())) {
             _ = self.readChar();
         }
         return self.utf8.i;
@@ -102,6 +102,12 @@ fn isWhitespace(char: ?u21) bool {
         ' ', '\t', '\r', '\n' => true,
         else => false,
     };
+}
+
+const isIdentStart = isLetter;
+
+fn isIdentContinue(char: ?u21) bool {
+    return isLetter(char) or isDigit(char);
 }
 
 fn isLetter(char: ?u21) bool {
