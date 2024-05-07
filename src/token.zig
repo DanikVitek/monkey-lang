@@ -71,9 +71,11 @@ pub const Token = union(enum) {
         _ = fmt;
         _ = options;
         switch (value) {
-            .illegal => |lit| try std.fmt.format(writer, ".{{ .illegal = {s} }}", .{lit}),
-            .ident => |lit| try std.fmt.format(writer, ".{{ .ident = {s} }}", .{lit}),
-            .int => |lit| try std.fmt.format(writer, ".{{ .int = {s} }}", .{lit}),
+            .illegal, .ident, .int => |lit| try std.fmt.format(
+                writer,
+                ".{{ .{s} = {s} }}",
+                .{ @tagName(value), lit },
+            ),
             else => try std.fmt.format(writer, ".{s}", .{@tagName(value)}),
         }
     }

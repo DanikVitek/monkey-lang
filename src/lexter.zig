@@ -3,99 +3,97 @@ const ComptimeStringMap = std.ComptimeStringMap;
 
 const Token = @import("token.zig").Token;
 
-const testing = std.testing;
+/// current position in input (points to current char)
+position: usize,
+/// iterator over the utf8 codepoints
+utf8: std.unicode.Utf8Iterator,
 
-pub const Lexer = struct {
-    /// current position in input (points to current char)
-    position: usize,
-    /// iterator over the utf8 codepoints
-    utf8: std.unicode.Utf8Iterator,
+const Lexer = @This();
 
-    pub fn init(input: []const u8) !Lexer {
-        return .{
-            .position = 0,
-            .utf8 = (try std.unicode.Utf8View.init(input)).iterator(),
-        };
-    }
+pub fn init(input: []const u8) !Lexer {
+    return .{
+        .position = 0,
+        .utf8 = (try std.unicode.Utf8View.init(input)).iterator(),
+    };
+}
 
-    pub fn nextToken(self: *Lexer) ?Token {
-        self.skipWhitespace();
+pub fn nextToken(self: *Lexer) ?Token {
+    self.skipWhitespace();
 
-        return switch (self.readChar() orelse return null) {
-            '+' => .plus,
-            '-' => .minus,
-            '*' => .star,
-            '/' => .slash,
-            ',' => .comma,
-            ';' => .semicolon,
-            '(' => .lparen,
-            ')' => .rparen,
-            '{' => .lbrace,
-            '}' => .rbrace,
-            '=' => if (self.peekChar() == '=') blk: {
-                _ = self.readChar();
-                break :blk .eq;
-            } else .assign,
-            '!' => if (self.peekChar() == '=') blk: {
-                _ = self.readChar();
-                break :blk .neq;
-            } else .bang,
-            '<' => if (self.peekChar() == '=') blk: {
-                _ = self.readChar();
-                break :blk .leq;
-            } else .lt,
-            '>' => if (self.peekChar() == '=') blk: {
-                _ = self.readChar();
-                break :blk .geq;
-            } else .gt,
-            else => |ch| if (isIdentStart(ch)) blk: {
-                const start = self.position;
-                const end = self.endOfIdentifier();
-                const literal = self.utf8.bytes[start..end];
-                break :blk fromIdentifier(literal);
-            } else if (isDigit(ch)) blk: {
-                const start = self.position;
-                const end = self.endOfInt();
-                const literal = self.utf8.bytes[start..end];
-                break :blk .{ .int = literal };
-            } else blk: {
-                const len = std.unicode.utf8CodepointSequenceLength(ch) catch unreachable;
-                break :blk .{ .illegal = self.utf8.bytes[self.position .. self.position + len] };
-            },
-        };
-    }
-
-    fn readChar(self: *Lexer) ?u21 {
-        self.position = self.utf8.i;
-        return self.utf8.nextCodepoint();
-    }
-
-    fn peekChar(self: *Lexer) ?u21 {
-        const slice = self.utf8.peek(1);
-        if (slice.len == 0) return null;
-        return std.unicode.utf8Decode(slice) catch unreachable;
-    }
-
-    fn skipWhitespace(self: *Lexer) void {
-        while (isWhitespace(self.peekChar())) {
+    return switch (self.readChar() orelse return null) {
+        '+' => .plus,
+        '-' => .minus,
+        '*' => .star,
+        '/' => .slash,
+        ',' => .comma,
+        ';' => .semicolon,
+        '(' => .lparen,
+        ')' => .rparen,
+        '{' => .lbrace,
+        '}' => .rbrace,
+        '=' => if (self.peekChar() == '=') blk: {
             _ = self.readChar();
-        }
-    }
-
-    fn endOfIdentifier(self: *Lexer) usize {
-        while (isIdentContinue(self.peekChar())) {
+            break :blk .eq;
+        } else .assign,
+        '!' => if (self.peekChar() == '=') blk: {
             _ = self.readChar();
-        }
-        return self.utf8.i;
-    }
-
-    fn endOfInt(self: *Lexer) usize {
-        while (isDigit(self.peekChar())) {
+            break :blk .neq;
+        } else .bang,
+        '<' => if (self.peekChar() == '=') blk: {
             _ = self.readChar();
-        }
-        return self.utf8.i;
+            break :blk .leq;
+        } else .lt,
+        '>' => if (self.peekChar() == '=') blk: {
+            _ = self.readChar();
+            break :blk .geq;
+        } else .gt,
+        else => |ch| if (isIdentStart(ch)) blk: {
+            const start = self.position;
+            const end = self.endOfIdentifier();
+            const literal = self.utf8.bytes[start..end];
+            break :blk fromIdentifier(literal);
+        } else if (isDigit(ch)) blk: {
+            const start = self.position;
+            const end = self.endOfInt();
+            const literal = self.utf8.bytes[start..end];
+            break :blk .{ .int = literal };
+        } else blk: {
+            const len = std.unicode.utf8CodepointSequenceLength(ch) catch unreachable;
+            break :blk .{ .illegal = self.utf8.bytes[self.position .. self.position + len] };
+        },
+    };
+}
+
+fn readChar(self: *Lexer) ?u21 {
+    self.position = self.utf8.i;
+    return self.utf8.nextCodepoint();
+}
+
+fn peekChar(self: *Lexer) ?u21 {
+    const slice = self.utf8.peek(1);
+    if (slice.len == 0) return null;
+    return std.unicode.utf8Decode(slice) catch unreachable;
+}
+
+fn skipWhitespace(self: *Lexer) void {
+    while (isWhitespace(self.peekChar())) {
+        _ = self.readChar();
     }
-};
+}
+
+fn endOfIdentifier(self: *Lexer) usize {
+    while (isIdentContinue(self.peekChar())) {
+        _ = self.readChar();
+    }
+    return self.utf8.i;
+}
+
+fn endOfInt(self: *Lexer) usize {
+    while (isDigit(self.peekChar())) {
+        _ = self.readChar();
+    }
+    return self.utf8.i;
+}
 
 fn isWhitespace(char: ?u21) bool {
     return switch (char orelse return false) {
@@ -137,6 +135,8 @@ const Keywords = ComptimeStringMap(Token, .{
 fn fromIdentifier(literal: []const u8) Token {
     return Keywords.get(literal) orelse .{ .ident = literal };
 }
+
+const testing = std.testing;
 
 test "next token" {
     const input =

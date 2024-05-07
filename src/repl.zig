@@ -4,17 +4,17 @@ const Reader = std.fs.File.Reader;
 const Writer = std.fs.File.Writer;
 const ArrayList = std.ArrayList;
 
-const Lexer = @import("lexter.zig").Lexer;
+const Lexer = @import("Lexter.zig");
 const Token = @import("token.zig").Token;
 
 const PROMPT = ">> ";
 
-pub fn start(in: Reader, out: Writer, allocator: Allocator) !void {
+pub fn start(in: Reader, out: Writer, err: Writer, allocator: Allocator) !void {
     var buf = ArrayList(u8).init(allocator);
     defer buf.deinit();
     while (true) {
         defer buf.clearRetainingCapacity();
-        try out.writeAll(PROMPT);
+        try err.writeAll(PROMPT);
 
         try streamUntilEof(in, buf.writer(), '\n');
         const input = std.mem.trimRight(u8, buf.items, "\r");

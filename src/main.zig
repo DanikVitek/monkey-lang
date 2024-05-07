@@ -9,11 +9,13 @@ pub fn main() !void {
 
     const stdin = std.io.getStdIn().reader();
     const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer();
 
-    try repl.start(stdin, stdout, allocator);
+    try repl.start(stdin, stdout, stderr, allocator);
 }
 
 test {
     _ = @import("token.zig");
-    _ = @import("lexter.zig");
+    _ = @import("Lexter.zig");
+    _ = @import("Parser.zig");
 }
