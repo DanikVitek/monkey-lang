@@ -12,6 +12,7 @@ pub const Statement = union(enum) {
         name: []const u8,
         value: Expression,
     },
+    @"return": Expression,
 };
 
 pub const Expression = union(enum) {

@@ -47,6 +47,7 @@ pub fn parseProgram(self: *Parser, allocator: Allocator) !Ast {
 fn parseStmt(self: *Parser, allocator: Allocator) !?Statement {
     return switch (self.curr_token orelse return null) {
         .let => try self.parseLetStmt(allocator),
+        .@"return" => try self.parseReturnStmt(allocator),
         else => |tok| b: {
             std.log.err("Unimplemented for token {}\n", .{tok});
             break :b error.Unimplemented;
@@ -55,22 +56,28 @@ fn parseStmt(self: *Parser, allocator: Allocator) !?Statement {
 }
 
 fn parseLetStmt(self: *Parser, allocator: Allocator) !Statement {
-    std.debug.assert(self.curr_token == .let);
-    self.advanceTokens();
-    const name = switch (self.curr_token orelse return error.UnexpectedEof) {
-        .ident => |name| name,
-        else => return error.ExpectedIdent,
-    };
+    std.debug.assert(self.curr_token != null and self.curr_token.? == .let);
 
-    self.advanceTokens();
-    if (self.curr_token == null or self.curr_token.? != .assign) return error.ExpectedAssign;
+    try self.expectPeek(.ident, error.ExpectedIdent);
+    const name = self.curr_token.?.ident;
+
+    try self.expectPeek(.assign, error.ExpectedAssign);
 
     const value = try self.parseExpr(allocator);
 
-    self.advanceTokens();
-    if (self.curr_token == null or self.curr_token.? != .semicolon) return error.ExpectedSemicolon;
+    try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
     return Statement{ .let = .{ .name = name, .value = value } };
+}
+
+fn parseReturnStmt(self: *Parser, allocator: Allocator) !Statement {
+    std.debug.assert(self.curr_token != null and self.curr_token.? == .@"return");
+
+    const value = try self.parseExpr(allocator);
+
+    try self.expectPeek(.semicolon, error.ExpectedSemicolon);
+
+    return Statement{ .@"return" = value };
 }
 
 fn parseExpr(self: *Parser, allocator: Allocator) anyerror!Expression {
@@ -115,6 +122,11 @@ fn parseBinOpExpr(self: *Parser, allocator: Allocator) !Expression {
     } };
 }
 
+fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
+    if (self.peek_token == null or self.peek_token.? != expected) return err;
+    self.advanceTokens();
+}
+
 const testing = std.testing;
 
 test "let statements" {
@@ -142,5 +154,32 @@ test "let statements" {
         try testing.expectEqual(.let, tag);
         try testing.expectEqualStrings(case[0], data.let.name);
         try testing.expectEqual(case[1], data.let.value);
+    }
+}
+
+test "return statement" {
+    const input =
+        \\return 5;
+        \\return 10;
+        \\return 696969;
+    ;
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    var program = (try parser.parseProgram(testing.allocator)).program;
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), program.len);
+
+    const cases = [_]Expression{
+        .{ .int = 5 },
+        .{ .int = 10 },
+        .{ .int = 696969 },
+    };
+
+    const statements = program.slice();
+    for (statements.items(.tags), statements.items(.data), cases) |tag, data, case| {
+        try testing.expectEqual(.@"return", tag);
+        try testing.expectEqual(case, data.@"return");
     }
 }
