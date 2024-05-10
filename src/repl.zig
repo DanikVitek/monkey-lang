@@ -1,3 +1,5 @@
+const builtin = @import("builtin");
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Reader = std.fs.File.Reader;
@@ -11,7 +13,8 @@ const PROMPT = ">> ";
 
 pub fn start(in: Reader, out: Writer, err: Writer, allocator: Allocator) !void {
     var buf = ArrayList(u8).init(allocator);
-    defer buf.deinit();
+    // defer buf.deinit();
+
     while (true) {
         defer buf.clearRetainingCapacity();
         try err.writeAll(PROMPT);
