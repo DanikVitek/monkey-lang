@@ -13,6 +13,7 @@ pub const Statement = union(enum) {
         value: Expression,
     },
     @"return": Expression,
+    expr: Expression,
 };
 
 pub const Expression = union(enum) {
@@ -26,6 +27,11 @@ pub const Expression = union(enum) {
     unary_op: struct {
         op: UnaryOp,
         operand: *const Expression,
+    },
+    @"if": struct {
+        cond: *const Expression,
+        true_case: *const Expression,
+        false_case: *const Expression,
     },
 
     pub const BinOp = enum {
