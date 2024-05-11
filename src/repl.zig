@@ -6,13 +6,17 @@ const Reader = std.fs.File.Reader;
 const Writer = std.fs.File.Writer;
 const ArrayList = std.ArrayList;
 
-const Lexer = @import("Lexter.zig");
 const Token = @import("token.zig").Token;
+const Lexer = @import("Lexter.zig");
+const Parser = @import("Parser.zig");
+
+const pretty = @import("pretty");
 
 const PROMPT = ">> ";
 
-pub fn start(in: Reader, out: Writer, err: Writer, allocator: Allocator) !void {
-    var buf = ArrayList(u8).init(allocator);
+pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
+    _ = out;
+    var buf = ArrayList(u8).init(alloc);
     // defer buf.deinit();
 
     while (true) {
@@ -23,8 +27,19 @@ pub fn start(in: Reader, out: Writer, err: Writer, allocator: Allocator) !void {
         const input = std.mem.trimRight(u8, buf.items, "\r");
 
         var lexer = try Lexer.init(input);
-        while (lexer.nextToken()) |tok| {
-            try std.fmt.format(out, "{}\n", .{tok});
+        var parser = Parser.init(&lexer);
+        const ast = try parser.parseProgram(alloc);
+
+        const slice = ast.program.slice();
+
+        const opts: pretty.Options = .{
+            .max_depth = 0,
+            .show_type_names = false,
+            .empty_line_at_end = true,
+        };
+
+        for (0..slice.len) |i| {
+            try pretty.print(alloc, slice.get(i), opts);
         }
     }
 }

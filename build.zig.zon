@@ -43,6 +43,10 @@
         //    // actually used.
         //    .lazy = false,
         //},
+        .pretty = .{
+            .url = "https://github.com/timfayz/pretty/archive/v0.9.4.tar.gz",
+            .hash = "122011384e3bbeed449318ebfc3c2bb610e7bd97fb831911251e17a4666c4e471811",
+        },
     },
 
     // Specifies the set of files and directories that are included in this package.

@@ -36,6 +36,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const pretty = b.dependency("pretty", .{ .target = target, .optimize = optimize });
+    exe.root_module.addImport("pretty", pretty.module("pretty"));
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
