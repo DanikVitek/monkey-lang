@@ -8,31 +8,39 @@ program: MultiArrayList(Statement),
 const Ast = @This();
 
 pub const Statement = union(enum) {
-    let: struct {
-        name: []const u8,
-        value: Expression,
-    },
+    let: LetStmt,
     @"return": Expression,
     expr: Expression,
+
+    pub const LetStmt = struct {
+        name: []const u8,
+        value: Expression,
+    };
 };
 
 pub const Expression = union(enum) {
     ident: []const u8,
     int: u64,
-    bin_op: struct {
+    bin_op: BinOpExpr,
+    unary_op: UnaryOpExpr,
+    @"if": IfExpr,
+
+    pub const BinOpExpr = struct {
         left: *const Expression,
         op: BinOp,
         right: *const Expression,
-    },
-    unary_op: struct {
+    };
+
+    pub const UnaryOpExpr = struct {
         op: UnaryOp,
         operand: *const Expression,
-    },
-    @"if": struct {
+    };
+
+    pub const IfExpr = struct {
         cond: *const Expression,
         true_case: *const Expression,
         false_case: *const Expression,
-    },
+    };
 
     pub const BinOp = enum {
         add,
