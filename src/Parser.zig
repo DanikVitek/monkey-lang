@@ -80,40 +80,47 @@ fn parseReturnStmt(self: *Parser, allocator: Allocator) !Statement {
     return Statement{ .@"return" = value };
 }
 
-fn parseExpr(self: *Parser, allocator: Allocator) anyerror!Expression {
+const ParseExprError = error{
+    UnexpectedEof,
+    UnexpectedToken,
+    Unimplemented,
+    ExpectedBinOp,
+} || Allocator.Error || std.fmt.ParseIntError;
+
+fn parseExpr(self: *Parser, alloc: Allocator) ParseExprError!Expression {
     self.advanceTokens();
-    return switch (self.curr_token orelse return error.UnexpectedEof) {
-        .int => |lit| switch (self.peek_token orelse return error.UnexpectedEof) {
-            .plus, .minus, .star, .slash, .lt, .gt, .leq, .geq, .eq, .neq => self.parseBinOpExpr(allocator),
+    return switch (self.curr_token orelse return ParseExprError.UnexpectedEof) {
+        .int => |lit| switch (self.peek_token orelse return ParseExprError.UnexpectedEof) {
+            .plus, .minus, .star, .slash, .lt, .gt, .leq, .geq, .eq, .neq => self.parseBinOpExpr(alloc),
             .semicolon => Expression{ .int = try std.fmt.parseInt(u64, lit, 10) },
-            else => error.UnexpectedToken,
+            else => ParseExprError.UnexpectedToken,
         },
         .minus, .bang => Expression{ .unary_op = .{
             .op = UnaryOp.fromToken(self.curr_token.?).?,
             .operand = blk: {
-                const operand = try allocator.create(Expression);
-                operand.* = try self.parseExpr(allocator);
+                const operand = try alloc.create(Expression);
+                operand.* = try self.parseExpr(alloc);
                 break :blk operand;
             },
         } },
         // .lparen => self.parseGroupedExpr(),
-        else => error.Unimplemented,
+        else => ParseExprError.Unimplemented,
     };
 }
 
-fn parseBinOpExpr(self: *Parser, allocator: Allocator) !Expression {
-    const left = try allocator.create(Expression);
+fn parseBinOpExpr(self: *Parser, alloc: Allocator) ParseExprError!Expression {
+    const left = try alloc.create(Expression);
     left.* = switch (self.curr_token orelse unreachable) {
         .int => |lit| Expression{ .int = try std.fmt.parseInt(u64, lit, 10) },
-        else => return error.Unimplemented,
+        else => return ParseExprError.Unimplemented,
     };
 
     self.advanceTokens();
-    const op = BinOp.fromToken(self.curr_token orelse return error.ExpectedBinOp) orelse return error.ExpectedBinOp;
+    const op = BinOp.fromToken(self.curr_token orelse return ParseExprError.ExpectedBinOp) orelse return error.ExpectedBinOp;
 
     self.advanceTokens();
-    const right = try allocator.create(Expression);
-    right.* = try self.parseExpr(allocator);
+    const right = try alloc.create(Expression);
+    right.* = try self.parseExpr(alloc);
 
     return Expression{ .bin_op = .{
         .left = left,
