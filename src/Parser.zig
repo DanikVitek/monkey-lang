@@ -62,6 +62,7 @@ fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
 
     self.advanceTokens();
     const value = try PrattParser.parseExpr(self, .lowest, alloc);
+    errdefer value.deinit(alloc);
 
     try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
@@ -73,6 +74,7 @@ fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
 
     self.advanceTokens();
     const value = try PrattParser.parseExpr(self, .lowest, alloc);
+    errdefer value.deinit(alloc);
 
     try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
