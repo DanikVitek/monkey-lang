@@ -39,6 +39,7 @@ pub const Statement = union(enum) {
 pub const Expression = union(enum) {
     ident: []const u8,
     int: u64,
+    bool: bool,
     unary_op: UnaryOpExpr,
     bin_op: BinOpExpr,
     @"if": IfExpr,
@@ -167,8 +168,9 @@ pub const Expression = union(enum) {
         _ = fmt;
         _ = options;
         return switch (value) {
-            .ident => |lit| std.fmt.format(writer, "{s}", .{lit}),
-            .int => |lit| std.fmt.format(writer, "{d}", .{lit}),
+            .ident => |name| std.fmt.format(writer, "{s}", .{name}),
+            .int => |val| std.fmt.format(writer, "{d}", .{val}),
+            .bool => |val| std.fmt.format(writer, "{}", .{val}),
             .unary_op => |expr| std.fmt.format(writer, "({}{})", .{ expr.op, expr.operand }),
             .bin_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
             .@"if" => |expr| std.fmt.format(writer, "if ({}) {{ {} }} else {{ {} }}", .{ expr.cond, expr.true_case, expr.false_case }),

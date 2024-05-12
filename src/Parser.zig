@@ -148,6 +148,7 @@ const PrattParser = struct {
     fn prefix(p: *Parser, alloc: Allocator) !Expression {
         const curr_tok = p.curr_token orelse return error.UnexpectedEof;
         return switch (curr_tok) {
+            .false, .true => parseBool(p),
             .ident => parseIdent(p),
             .int => parseInt(p),
             .bang, .minus => parsePrefixExpr(p, alloc),
@@ -159,19 +160,23 @@ const PrattParser = struct {
         };
     }
 
-    inline fn parseIdent(p: *Parser) Expression {
-        std.debug.assert(p.curr_token.? == .ident);
+    inline fn parseBool(p: *const Parser) Expression {
+        return Expression{ .bool = switch (p.curr_token.?) {
+            .false => false,
+            .true => true,
+            else => unreachable,
+        } };
+    }
+
+    inline fn parseIdent(p: *const Parser) Expression {
         return Expression{ .ident = p.curr_token.?.ident };
     }
 
-    inline fn parseInt(p: *Parser) !Expression {
-        std.debug.assert(p.curr_token.? == .int);
+    inline fn parseInt(p: *const Parser) !Expression {
         return Expression{ .int = try std.fmt.parseInt(u64, p.curr_token.?.int, 10) };
     }
 
     fn parsePrefixExpr(p: *Parser, alloc: Allocator) !Expression {
-        std.debug.assert(p.curr_token.? == .minus or p.curr_token.? == .bang);
-
         const op = UnaryOp.fromToken(p.curr_token.?).?;
         p.advanceTokens();
 
@@ -319,6 +324,29 @@ test "integer expression" {
 
     const cases = [_]Statement{
         .{ .expr = .{ .int = 5 } },
+    };
+
+    const statements = program.slice();
+    for (0..statements.len, cases) |i, case| {
+        const stmt = statements.get(i);
+        try testing.expectEqualDeep(case, stmt);
+    }
+}
+
+test "bool expression" {
+    const input = "true;false;";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    var program = (try parser.parseProgram(testing.allocator)).program;
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), program.len);
+
+    const cases = [_]Statement{
+        .{ .expr = .{ .bool = true } },
+        .{ .expr = .{ .bool = false } },
     };
 
     const statements = program.slice();
