@@ -34,28 +34,25 @@ fn advanceTokens(self: *Parser) void {
     self.peek_token = self.lexer.nextToken();
 }
 
-pub fn parseProgram(self: *Parser, allocator: Allocator) !Ast {
+pub fn parseProgram(self: *Parser, alloc: Allocator) !Ast {
     var program = MultiArrayList(Ast.Statement){};
 
-    while (try self.parseStmt(allocator)) |statement| : (self.advanceTokens()) {
-        try program.append(allocator, statement);
+    while (try self.parseStmt(alloc)) |statement| : (self.advanceTokens()) {
+        try program.append(alloc, statement);
     }
 
     return Ast{ .program = program };
 }
 
-fn parseStmt(self: *Parser, allocator: Allocator) !?Statement {
+fn parseStmt(self: *Parser, alloc: Allocator) !?Statement {
     return switch (self.curr_token orelse return null) {
-        .let => try self.parseLetStmt(allocator),
-        .@"return" => try self.parseReturnStmt(allocator),
-        else => |tok| b: {
-            std.log.err("Unimplemented for token {}\n", .{tok});
-            break :b error.Unimplemented;
-        },
+        .let => try self.parseLetStmt(alloc),
+        .@"return" => try self.parseReturnStmt(alloc),
+        else => try self.parseExprStmt(alloc),
     };
 }
 
-fn parseLetStmt(self: *Parser, allocator: Allocator) !Statement {
+fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
     std.debug.assert(self.curr_token != null and self.curr_token.? == .let);
 
     try self.expectPeek(.ident, error.ExpectedIdent);
@@ -63,76 +60,111 @@ fn parseLetStmt(self: *Parser, allocator: Allocator) !Statement {
 
     try self.expectPeek(.assign, error.ExpectedAssign);
 
-    const value = try self.parseExpr(allocator);
+    self.advanceTokens();
+    const value = try PrattParser.parseExpr(self, .lowest, alloc);
 
     try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
     return Statement{ .let = .{ .name = name, .value = value } };
 }
 
-fn parseReturnStmt(self: *Parser, allocator: Allocator) !Statement {
+fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
     std.debug.assert(self.curr_token != null and self.curr_token.? == .@"return");
 
-    const value = try self.parseExpr(allocator);
+    self.advanceTokens();
+    const value = try PrattParser.parseExpr(self, .lowest, alloc);
 
     try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
     return Statement{ .@"return" = value };
 }
 
-const ParseExprError = error{
-    UnexpectedEof,
-    UnexpectedToken,
-    Unimplemented,
-    ExpectedBinOp,
-} || Allocator.Error || std.fmt.ParseIntError;
+fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
+    const expr = try PrattParser.parseExpr(self, .lowest, alloc);
 
-fn parseExpr(self: *Parser, alloc: Allocator) ParseExprError!Expression {
-    self.advanceTokens();
-    return switch (self.curr_token orelse return ParseExprError.UnexpectedEof) {
-        .int => |lit| switch (self.peek_token orelse return ParseExprError.UnexpectedEof) {
-            .plus, .minus, .star, .slash, .lt, .gt, .leq, .geq, .eq, .neq => self.parseBinOpExpr(alloc),
-            .semicolon => Expression{ .int = try std.fmt.parseInt(u64, lit, 10) },
-            else => ParseExprError.UnexpectedToken,
-        },
-        .minus, .bang => Expression{ .unary_op = .{
-            .op = UnaryOp.fromToken(self.curr_token.?).?,
-            .operand = blk: {
-                const operand = try alloc.create(Expression);
-                operand.* = try self.parseExpr(alloc);
-                break :blk operand;
-            },
-        } },
-        // .lparen => self.parseGroupedExpr(),
-        else => ParseExprError.Unimplemented,
-    };
-}
+    try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
-fn parseBinOpExpr(self: *Parser, alloc: Allocator) ParseExprError!Expression {
-    const left = try alloc.create(Expression);
-    left.* = switch (self.curr_token orelse unreachable) {
-        .int => |lit| Expression{ .int = try std.fmt.parseInt(u64, lit, 10) },
-        else => return ParseExprError.Unimplemented,
-    };
-
-    self.advanceTokens();
-    const op = BinOp.fromToken(self.curr_token orelse return ParseExprError.ExpectedBinOp) orelse return error.ExpectedBinOp;
-
-    self.advanceTokens();
-    const right = try alloc.create(Expression);
-    right.* = try self.parseExpr(alloc);
-
-    return Expression{ .bin_op = .{
-        .left = left,
-        .op = op,
-        .right = right,
-    } };
+    return Statement{ .expr = expr };
 }
 
 fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
     if (self.peek_token == null or self.peek_token.? != expected) return err;
     self.advanceTokens();
 }
+
+const PrattParser = struct {
+    pub const Precedence = enum(u3) {
+        lowest = 1,
+        equals,
+        @"less/greater",
+        sum,
+        product,
+        prefix,
+        call,
+    };
+
+    const EnumMap = std.EnumMap;
+    const TokenTag = std.meta.Tag(Token);
+
+    const PrefixParseFn = *const fn (*Parser, Allocator) ParseExprError!Expression;
+    const InfixParseFn = *const fn (*Parser, Expression, Allocator) ParseExprError!Expression;
+
+    const prefix_parse_fns = b: {
+        var map = EnumMap(TokenTag, PrefixParseFn){};
+        map.put(.ident, &parseIdent);
+        map.put(.int, &parseInt);
+        map.put(.bang, &parsePrefixExpr);
+        map.put(.minus, &parsePrefixExpr);
+        break :b map;
+    };
+
+    const infix_parse_fns = b: {
+        const map = EnumMap(TokenTag, InfixParseFn){};
+        break :b map;
+    };
+
+    pub const ParseExprError = error{
+        UnexpectedEof,
+        UnexpectedToken,
+        Unimplemented,
+        // ExpectedBinOp,
+    } || std.fmt.ParseIntError || Allocator.Error;
+
+    pub fn parseExpr(p: *Parser, precedence: Precedence, alloc: Allocator) ParseExprError!Expression {
+        _ = precedence;
+
+        const curr_token = p.curr_token orelse return error.UnexpectedEof;
+        const prefix = prefix_parse_fns.get(curr_token) orelse {
+            std.log.err("No prefix parse function found for '{s}'", .{curr_token});
+            return error.UnexpectedToken;
+        };
+        return prefix(p, alloc); // left expr
+    }
+
+    fn parseIdent(p: *Parser, alloc: Allocator) !Expression {
+        _ = alloc;
+        std.debug.assert(p.curr_token != null and p.curr_token.? == .ident);
+        return Expression{ .ident = p.curr_token.?.ident };
+    }
+
+    fn parseInt(p: *Parser, alloc: Allocator) !Expression {
+        _ = alloc;
+        std.debug.assert(p.curr_token != null and p.curr_token.? == .int);
+        return Expression{ .int = try std.fmt.parseInt(u64, p.curr_token.?.int, 10) };
+    }
+
+    fn parsePrefixExpr(p: *Parser, alloc: Allocator) !Expression {
+        std.debug.assert(p.curr_token != null and (p.curr_token.? == .minus or p.curr_token.? == .bang));
+
+        const op = UnaryOp.fromToken(p.curr_token.?).?;
+        p.advanceTokens();
+
+        const operand = try alloc.create(Expression);
+        operand.* = try parseExpr(p, .prefix, alloc);
+
+        return Expression{ .unary_op = .{ .op = op, .operand = operand } };
+    }
+};
 
 const testing = std.testing;
 
@@ -188,5 +220,82 @@ test "return statement" {
     for (statements.items(.tags), statements.items(.data), cases) |tag, data, case| {
         try testing.expectEqual(.@"return", tag);
         try testing.expectEqual(case, data.@"return");
+    }
+}
+
+test "identifier expression" {
+    const input = "foobar;";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    var program = (try parser.parseProgram(testing.allocator)).program;
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.len);
+
+    const cases = [_]Statement{
+        .{ .expr = .{ .ident = "foobar" } },
+    };
+
+    const statements = program.slice();
+    for (0..statements.len, cases) |i, case| {
+        const stmt = statements.get(i);
+        try testing.expectEqualDeep(case, stmt);
+    }
+}
+
+test "integer expression" {
+    const input = "5;";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    var program = (try parser.parseProgram(testing.allocator)).program;
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 1), program.len);
+
+    const cases = [_]Statement{
+        .{ .expr = .{ .int = 5 } },
+    };
+
+    const statements = program.slice();
+    for (0..statements.len, cases) |i, case| {
+        const stmt = statements.get(i);
+        try testing.expectEqualDeep(case, stmt);
+    }
+}
+
+test "prefix expression" {
+    const input =
+        \\!5;
+        \\-15;
+    ;
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    const ast = try parser.parseProgram(testing.allocator);
+    defer ast.deinit(testing.allocator);
+    const program = ast.program;
+
+    try testing.expectEqual(@as(usize, 2), program.len);
+
+    const cases = [_]Statement{
+        .{ .expr = Expression{ .unary_op = .{
+            .op = UnaryOp.not,
+            .operand = &Expression{ .int = 5 },
+        } } },
+        .{ .expr = Expression{ .unary_op = .{
+            .op = UnaryOp.minus,
+            .operand = &Expression{ .int = 15 },
+        } } },
+    };
+
+    const statements = program.slice();
+    for (0..statements.len, cases) |i, case| {
+        const stmt = statements.get(i);
+        try testing.expectEqualDeep(case, stmt);
     }
 }

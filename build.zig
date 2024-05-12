@@ -15,6 +15,8 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const pretty = b.dependency("pretty", .{ .target = target, .optimize = optimize });
+
     const lib = b.addStaticLibrary(.{
         .name = "monkey-lang",
         // In this case the main source file is merely a path, however, in more
@@ -23,6 +25,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    lib.root_module.addImport("pretty", pretty.module("pretty"));
 
     // This declares intent for the library to be installed into the standard
     // location when the user invokes the "install" step (the default step when
@@ -36,7 +40,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const pretty = b.dependency("pretty", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("pretty", pretty.module("pretty"));
 
     // This declares intent for the executable to be installed into the
