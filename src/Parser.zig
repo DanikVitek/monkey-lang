@@ -133,22 +133,28 @@ const PrattParser = struct {
     pub fn parseExpr(p: *Parser, precedence: Precedence, alloc: Allocator) ParseExprError!Expression {
         _ = precedence;
 
-        const curr_token = p.curr_token orelse return error.UnexpectedEof;
-        const prefix = prefix_parse_fns.get(curr_token) orelse {
-            std.log.err("No prefix parse function found for '{s}'", .{curr_token});
-            return error.UnexpectedToken;
-        };
         return prefix(p, alloc); // left expr
     }
 
-    fn parseIdent(p: *Parser, alloc: Allocator) !Expression {
-        _ = alloc;
+    fn prefix(p: *Parser, alloc: Allocator) !Expression {
+        const curr_token = p.curr_token orelse return error.UnexpectedEof;
+        return switch (curr_token) {
+            .ident => parseIdent(p),
+            .int => parseInt(p),
+            .bang, .minus => parsePrefixExpr(p, alloc),
+            else => b: {
+                std.log.err("No prefix parse function found for '{s}'", .{curr_token});
+                break :b error.UnexpectedToken;
+            },
+        };
+    }
+
+    fn parseIdent(p: *Parser) Expression {
         std.debug.assert(p.curr_token != null and p.curr_token.? == .ident);
         return Expression{ .ident = p.curr_token.?.ident };
     }
 
-    fn parseInt(p: *Parser, alloc: Allocator) !Expression {
-        _ = alloc;
+    fn parseInt(p: *Parser) !Expression {
         std.debug.assert(p.curr_token != null and p.curr_token.? == .int);
         return Expression{ .int = try std.fmt.parseInt(u64, p.curr_token.?.int, 10) };
     }
