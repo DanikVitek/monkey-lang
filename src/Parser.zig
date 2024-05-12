@@ -45,6 +45,9 @@ pub fn parseProgram(self: *Parser, alloc: Allocator) !Ast {
 }
 
 fn parseStmt(self: *Parser, alloc: Allocator) !?Statement {
+    while (self.currTokenIs(.semicolon)) {
+        self.advanceTokens();
+    }
     return switch (self.curr_token orelse return null) {
         .let => try self.parseLetStmt(alloc),
         .@"return" => try self.parseReturnStmt(alloc),

@@ -23,11 +23,18 @@ pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
         try err.writeAll(PROMPT);
 
         try streamUntilEof(in, buf.writer(), '\n');
-        const input = std.mem.trimRight(u8, buf.items, "\r");
+        if (std.mem.indexOfScalar(u8, buf.items, '\r')) |index| {
+            buf.items.len = index + 1;
+        }
+        try buf.append(';');
 
-        var lexer = try Lexer.init(input);
+        var lexer = try Lexer.init(buf.items);
         var parser = Parser.init(&lexer);
-        const ast = try parser.parseProgram(alloc);
+        const ast = parser.parseProgram(alloc) catch |e| {
+            try err.print("Error: {s}\n", .{@errorName(e)});
+            continue;
+        };
+        defer ast.deinit(alloc);
 
         const slice = ast.program.slice();
 
