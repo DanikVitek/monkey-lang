@@ -182,3 +182,17 @@ pub fn deinit(self: Ast, alloc: Allocator) void {
     }
     program.deinit(alloc);
 }
+
+pub fn format(value: Ast, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    _ = fmt;
+    _ = options;
+    const stmts = value.program.slice();
+    if (stmts.len > 0) {
+        const stmt = stmts.get(0);
+        try std.fmt.format(writer, "{}", .{stmt});
+    }
+    for (1..stmts.len) |i| {
+        const stmt = stmts.get(i);
+        try std.fmt.format(writer, "\n{}", .{stmt});
+    }
+}

@@ -459,7 +459,7 @@ test "operator precedence parsing" {
         "(((a + (b * c)) + (d / e)) - f);",
     }, .{
         "3 + 4; -5 * 5;",
-        "(3 + 4);((-5) * 5);",
+        "(3 + 4);\n((-5) * 5);",
     }, .{
         "5 > 4 == 3 < 4;",
         "((5 > 4) == (3 < 4));",
@@ -489,14 +489,6 @@ test "operator precedence parsing" {
         //     return err;
         // };
 
-        var concatenated = try std.ArrayList(u8).initCapacity(testing.allocator, case[1].len);
-        defer concatenated.deinit();
-
-        const slice = program.slice();
-        for (0..slice.len) |i| {
-            try std.fmt.format(concatenated.writer(), "{}", .{slice.get(i)});
-        }
-
-        try testing.expectEqualStrings(case[1], concatenated.items);
+        try testing.expectFmt(case[1], "{}", .{ast});
     }
 }
