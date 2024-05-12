@@ -88,8 +88,16 @@ fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
 }
 
 fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
-    if (self.peek_token == null or self.peek_token.? != expected) return err;
+    if (!self.peekTokenIs(expected)) return err;
     self.advanceTokens();
+}
+
+fn currTokenIs(self: *const Parser, tok: std.meta.Tag(Token)) bool {
+    return self.curr_token != null and self.curr_token.? == tok;
+}
+
+fn peekTokenIs(self: *const Parser, tok: std.meta.Tag(Token)) bool {
+    return self.peek_token != null and self.peek_token.? == tok;
 }
 
 const PrattParser = struct {
@@ -101,40 +109,58 @@ const PrattParser = struct {
         product,
         prefix,
         call,
+
+        fn fromInfixToken(tok: Token) ?Precedence {
+            return switch (tok) {
+                .eq, .neq => .equals,
+                .lt, .gt, .leq, .geq => .@"less/greater",
+                .plus, .minus => .sum,
+                .star, .slash => .product,
+                else => null,
+            };
+        }
     };
 
     pub const ParseExprError = error{
         UnexpectedEof,
         UnexpectedToken,
         Unimplemented,
-        // ExpectedBinOp,
     } || std.fmt.ParseIntError || Allocator.Error;
 
     pub fn parseExpr(p: *Parser, precedence: Precedence, alloc: Allocator) ParseExprError!Expression {
-        _ = precedence;
+        var left_expr = try prefix(p, alloc);
+        errdefer left_expr.deinit(alloc);
 
-        return prefix(p, alloc); // left expr
+        while (!p.peekTokenIs(.semicolon) and @intFromEnum(precedence) < @intFromEnum(peekPrecedence(p))) {
+            if (!isInfix(p.peek_token.?)) return left_expr;
+
+            p.advanceTokens();
+
+            left_expr = try parseInfixExpr(p, left_expr, alloc);
+        }
+
+        return left_expr;
     }
 
     fn prefix(p: *Parser, alloc: Allocator) !Expression {
-        const curr_token = p.curr_token orelse return error.UnexpectedEof;
-        return switch (curr_token) {
+        const curr_tok = p.curr_token orelse return error.UnexpectedEof;
+        return switch (curr_tok) {
             .ident => parseIdent(p),
             .int => parseInt(p),
             .bang, .minus => parsePrefixExpr(p, alloc),
             else => b: {
-                std.log.err("No prefix parse function found for '{s}'", .{curr_token});
+                std.log.err("No prefix parse function for '{s}'", .{curr_tok});
                 break :b error.UnexpectedToken;
             },
         };
     }
 
-    fn parseIdent(p: *Parser) Expression {
+    inline fn parseIdent(p: *Parser) Expression {
         std.debug.assert(p.curr_token != null and p.curr_token.? == .ident);
         return Expression{ .ident = p.curr_token.?.ident };
     }
 
-    fn parseInt(p: *Parser) !Expression {
+    inline fn parseInt(p: *Parser) !Expression {
         std.debug.assert(p.curr_token != null and p.curr_token.? == .int);
         return Expression{ .int = try std.fmt.parseInt(u64, p.curr_token.?.int, 10) };
     }
@@ -145,10 +171,46 @@ const PrattParser = struct {
         const op = UnaryOp.fromToken(p.curr_token.?).?;
         p.advanceTokens();
 
-        const operand = try alloc.create(Expression);
-        operand.* = try parseExpr(p, .prefix, alloc);
+        const right = try alloc.create(Expression);
+        errdefer alloc.destroy(right);
+        right.* = try parseExpr(p, .prefix, alloc);
 
-        return Expression{ .unary_op = .{ .op = op, .operand = operand } };
+        return Expression{ .unary_op = .{ .op = op, .operand = right } };
+    }
+
+    fn isInfix(tok: Token) bool {
+        return switch (tok) {
+            .plus, .minus, .star, .slash, .eq, .neq, .lt, .gt, .leq, .geq => true,
+            else => false,
+        };
+    }
+
+    fn parseInfixExpr(p: *Parser, left: Expression, alloc: Allocator) !Expression {
+        const op = BinOp.fromToken(p.curr_token.?).?;
+
+        const precedence = currPrecedence(p);
+        p.advanceTokens();
+
+        const right = try alloc.create(Expression);
+        errdefer alloc.destroy(right);
+        right.* = try parseExpr(p, precedence, alloc);
+
+        const boxed_left = try alloc.create(Expression);
+        boxed_left.* = left;
+
+        return Expression{ .bin_op = .{
+            .left = boxed_left,
+            .op = op,
+            .right = right,
+        } };
+    }
+
+    fn currPrecedence(p: *const Parser) Precedence {
+        return Precedence.fromInfixToken(p.curr_token orelse return .lowest) orelse .lowest;
+    }
+
+    fn peekPrecedence(p: *const Parser) Precedence {
+        return Precedence.fromInfixToken(p.peek_token orelse return .lowest) orelse .lowest;
     }
 };
 
@@ -254,34 +316,188 @@ test "integer expression" {
 }
 
 test "prefix expression" {
-    const input =
-        \\!5;
-        \\-15;
-    ;
+    const cases = [_]struct {
+        input: []const u8,
+        op: UnaryOp,
+        operand: Expression,
+    }{ .{
+        .input = "!5;",
+        .op = .not,
+        .operand = Expression{ .int = 5 },
+    }, .{
+        .input = "-15;",
+        .op = .minus,
+        .operand = Expression{ .int = 15 },
+    } };
 
-    var lexer = try Lexer.init(input);
-    var parser = Parser.init(&lexer);
+    for (cases) |case| {
+        var lexer = try Lexer.init(case.input);
+        var parser = Parser.init(&lexer);
 
-    const ast = try parser.parseProgram(testing.allocator);
-    defer ast.deinit(testing.allocator);
-    const program = ast.program;
+        const ast = try parser.parseProgram(testing.allocator);
+        defer ast.deinit(testing.allocator);
+        const program = ast.program;
 
-    try testing.expectEqual(@as(usize, 2), program.len);
+        try testing.expectEqual(@as(usize, 1), program.len);
 
-    const cases = [_]Statement{
-        .{ .expr = Expression{ .unary_op = .{
-            .op = UnaryOp.not,
-            .operand = &Expression{ .int = 5 },
-        } } },
-        .{ .expr = Expression{ .unary_op = .{
-            .op = UnaryOp.minus,
-            .operand = &Expression{ .int = 15 },
-        } } },
-    };
+        const stmt = program.get(0);
+        try testing.expectEqualDeep(
+            Statement{ .expr = .{ .unary_op = .{
+                .op = case.op,
+                .operand = &case.operand,
+            } } },
+            stmt,
+        );
+    }
+}
 
-    const statements = program.slice();
-    for (0..statements.len, cases) |i, case| {
-        const stmt = statements.get(i);
-        try testing.expectEqualDeep(case, stmt);
+// const pretty = @import("pretty");
+
+test "infix expression" {
+    const cases = comptime [_]struct {
+        input: []const u8,
+        left: Expression,
+        op: BinOp,
+        right: Expression,
+    }{ .{
+        .input = "5 + 6;",
+        .left = .{ .int = 5 },
+        .op = .add,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 - 6;",
+        .left = .{ .int = 5 },
+        .op = .sub,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 * 6;",
+        .left = .{ .int = 5 },
+        .op = .mul,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 / 6;",
+        .left = .{ .int = 5 },
+        .op = .div,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 > 6;",
+        .left = .{ .int = 5 },
+        .op = .gt,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 < 6;",
+        .left = .{ .int = 5 },
+        .op = .lt,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 == 6;",
+        .left = .{ .int = 5 },
+        .op = .eq,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 != 6;",
+        .left = .{ .int = 5 },
+        .op = .neq,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 >= 6;",
+        .left = .{ .int = 5 },
+        .op = .geq,
+        .right = .{ .int = 6 },
+    }, .{
+        .input = "5 <= 6;",
+        .left = .{ .int = 5 },
+        .op = .leq,
+        .right = .{ .int = 6 },
+    } };
+
+    inline for (cases) |case| {
+        var lexer = try Lexer.init(case.input);
+        var parser = Parser.init(&lexer);
+
+        const ast = try parser.parseProgram(testing.allocator);
+        defer ast.deinit(testing.allocator);
+        const program = ast.program;
+
+        try testing.expectEqual(@as(usize, 1), program.len);
+
+        const stmt = program.get(0);
+        try testing.expectEqualDeep(
+            Statement{ .expr = .{ .bin_op = .{
+                .left = &case.left,
+                .op = case.op,
+                .right = &case.right,
+            } } },
+            stmt,
+        );
+    }
+}
+
+test "operator precedence parsing" {
+    const cases = comptime [_]struct { []const u8, []const u8 }{ .{
+        "-a * b",
+        "((-a) * b)",
+    }, .{
+        "!-a",
+        "(!(-a))",
+    }, .{
+        "a + b + c",
+        "((a + b) + c)",
+    }, .{
+        "a + b - c",
+        "((a + b) - c)",
+    }, .{
+        "a * b * c",
+        "((a * b) * c)",
+    }, .{
+        "a * b / c",
+        "((a * b) / c)",
+    }, .{
+        "a + b / c",
+        "(a + (b / c))",
+    }, .{
+        "a + b * c + d / e - f",
+        "(((a + (b * c)) + (d / e)) - f)",
+    }, .{
+        "3 + 4; -5 * 5",
+        "(3 + 4)((-5) * 5)",
+    }, .{
+        "5 > 4 == 3 < 4",
+        "((5 > 4) == (3 < 4))",
+    }, .{
+        "5 < 4 != 3 > 4",
+        "((5 < 4) != (3 > 4))",
+    }, .{
+        "3 + 4 * 5 == 3 * 1 + 4 * 5",
+        "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))",
+    } };
+
+    inline for (cases) |case| {
+        var lexer = try Lexer.init(case[0] ++ ";");
+        var parser = Parser.init(&lexer);
+
+        const ast = try parser.parseProgram(testing.allocator);
+        defer ast.deinit(testing.allocator);
+        const program = ast.program;
+
+        try testing.expectEqual(std.mem.count(u8, case[0], ";") + 1, program.len);
+        // catch |err| {
+        //     std.log.err("case: \"{s}\"", .{case[0]});
+        //     const slice = program.slice();
+        //     for (0..slice.len) |i| {
+        //         std.log.err("{}\n", .{slice.get(i)});
+        //     }
+        //     return err;
+        // };
+
+        var concatenated = try std.ArrayList(u8).initCapacity(testing.allocator, case[1].len);
+        defer concatenated.deinit();
+
+        const slice = program.slice();
+        for (0..slice.len) |i| {
+            try std.fmt.format(concatenated.writer(), "{}", .{program.get(i).expr});
+        }
+
+        try testing.expectEqualStrings(case[1], concatenated.items);
     }
 }

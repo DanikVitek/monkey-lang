@@ -29,9 +29,14 @@ pub const Statement = union(enum) {
 pub const Expression = union(enum) {
     ident: []const u8,
     int: u64,
-    bin_op: BinOpExpr,
     unary_op: UnaryOpExpr,
+    bin_op: BinOpExpr,
     @"if": IfExpr,
+
+    pub const UnaryOpExpr = struct {
+        op: UnaryOp,
+        operand: *const Expression,
+    };
 
     pub const BinOpExpr = struct {
         left: *const Expression,
@@ -39,15 +44,36 @@ pub const Expression = union(enum) {
         right: *const Expression,
     };
 
-    pub const UnaryOpExpr = struct {
-        op: UnaryOp,
-        operand: *const Expression,
-    };
-
     pub const IfExpr = struct {
         cond: *const Expression,
         true_case: *const Expression,
         false_case: *const Expression,
+    };
+
+    pub const UnaryOp = enum {
+        not,
+        minus,
+
+        pub fn fromToken(tok: Token) ?UnaryOp {
+            return switch (tok) {
+                .bang => .not,
+                .minus => .minus,
+                else => null,
+            };
+        }
+
+        fn toToken(op: UnaryOp) Token {
+            return switch (op) {
+                .not => .bang,
+                .minus => .minus,
+            };
+        }
+
+        pub fn format(value: UnaryOp, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+            return std.fmt.format(writer, "{s}", .{value.toToken()});
+        }
     };
 
     pub const BinOp = enum {
@@ -77,18 +103,26 @@ pub const Expression = union(enum) {
                 else => null,
             };
         }
-    };
 
-    pub const UnaryOp = enum {
-        not,
-        minus,
-
-        pub fn fromToken(tok: Token) ?UnaryOp {
-            return switch (tok) {
-                .minus => .minus,
-                .bang => .not,
-                else => null,
+        fn toToken(op: BinOp) Token {
+            return switch (op) {
+                .add => .plus,
+                .sub => .minus,
+                .mul => .star,
+                .div => .slash,
+                .lt => .lt,
+                .gt => .gt,
+                .leq => .leq,
+                .geq => .geq,
+                .eq => .eq,
+                .neq => .neq,
             };
+        }
+
+        pub fn format(value: BinOp, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+            return std.fmt.format(writer, "{s}", .{value.toToken()});
         }
     };
 
@@ -114,6 +148,18 @@ pub const Expression = union(enum) {
             },
             else => {},
         }
+    }
+
+    pub fn format(value: Expression, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = options;
+        return switch (value) {
+            .ident => |lit| std.fmt.format(writer, "{s}", .{lit}),
+            .int => |lit| std.fmt.format(writer, "{d}", .{lit}),
+            .unary_op => |expr| std.fmt.format(writer, "({}{})", .{ expr.op, expr.operand }),
+            .bin_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
+            .@"if" => |expr| std.fmt.format(writer, "if ({}) {{ {} }} else {{ {} }}", .{ expr.cond, expr.true_case, expr.false_case }),
+        };
     }
 };
 
