@@ -4,17 +4,14 @@ const ComptimeStringMap = std.ComptimeStringMap;
 const Token = @import("token.zig").Token;
 
 /// current position in input (points to current char)
-position: usize,
+position: usize = 0,
 /// iterator over the utf8 codepoints
 utf8: std.unicode.Utf8Iterator,
 
 const Lexer = @This();
 
 pub fn init(input: []const u8) !Lexer {
-    return .{
-        .position = 0,
-        .utf8 = (try std.unicode.Utf8View.init(input)).iterator(),
-    };
+    return .{ .utf8 = (try std.unicode.Utf8View.init(input)).iterator() };
 }
 
 pub fn nextToken(self: *Lexer) ?Token {

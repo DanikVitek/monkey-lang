@@ -32,6 +32,7 @@ fn advanceTokens(self: *Parser) void {
 
 pub fn parseProgram(self: *Parser, alloc: Allocator) !Ast {
     var program = MultiArrayList(Ast.Statement){};
+    errdefer (Ast{ .program = program }).deinit(alloc);
 
     while (try self.parseStmt(alloc)) |statement| : (self.advanceTokens()) {
         try program.append(alloc, statement);
@@ -52,7 +53,7 @@ fn parseStmt(self: *Parser, alloc: Allocator) !?Statement {
 }
 
 fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
-    std.debug.assert(self.curr_token != null and self.curr_token.? == .let);
+    std.debug.assert(self.curr_token.? == .let);
 
     try self.expectPeek(.ident, error.ExpectedIdent);
     const name = self.curr_token.?.ident;
@@ -68,7 +69,7 @@ fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
 }
 
 fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
-    std.debug.assert(self.curr_token != null and self.curr_token.? == .@"return");
+    std.debug.assert(self.curr_token.? == .@"return");
 
     self.advanceTokens();
     const value = try PrattParser.parseExpr(self, .lowest, alloc);
@@ -124,6 +125,7 @@ const PrattParser = struct {
         UnexpectedEof,
         UnexpectedToken,
         Unimplemented,
+        ExpectedRParen,
     } || std.fmt.ParseIntError || Allocator.Error;
 
     pub fn parseExpr(p: *Parser, precedence: Precedence, alloc: Allocator) ParseExprError!Expression {
@@ -147,6 +149,7 @@ const PrattParser = struct {
             .ident => parseIdent(p),
             .int => parseInt(p),
             .bang, .minus => parsePrefixExpr(p, alloc),
+            .lparen => parseGroupExpr(p, alloc),
             else => b: {
                 std.log.err("No prefix parse function for '{s}'", .{curr_tok});
                 break :b error.UnexpectedToken;
@@ -207,6 +210,18 @@ const PrattParser = struct {
 
     fn peekPrecedence(p: *const Parser) Precedence {
         return Precedence.fromInfixToken(p.peek_token orelse return .lowest) orelse .lowest;
+    }
+
+    fn parseGroupExpr(p: *Parser, alloc: Allocator) !Expression {
+        std.debug.assert(p.curr_token.? == .lparen);
+        p.advanceTokens();
+
+        const expr = try parseExpr(p, .lowest, alloc);
+        errdefer expr.deinit(alloc);
+
+        try p.expectPeek(.rparen, error.ExpectedRParen);
+
+        return expr;
     }
 };
 

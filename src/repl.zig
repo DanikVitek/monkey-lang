@@ -57,6 +57,7 @@ pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
 
             try std.fmt.format(out, "{s}", .{output.items});
         }
+        try std.fmt.format(out, "{}\n\n", .{ast});
     }
 }
 
