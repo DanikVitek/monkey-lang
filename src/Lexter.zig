@@ -25,6 +25,7 @@ pub fn nextToken(self: *Lexer) ?Token {
         '-' => .minus,
         '*' => .star,
         '/' => .slash,
+        '%' => .percent,
         ',' => .comma,
         ';' => .semicolon,
         '(' => .lparen,

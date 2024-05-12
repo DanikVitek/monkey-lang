@@ -114,7 +114,7 @@ const PrattParser = struct {
                 .eq, .neq => .equals,
                 .lt, .gt, .leq, .geq => .@"less/greater",
                 .plus, .minus => .sum,
-                .star, .slash => .product,
+                .star, .slash, .percent => .product,
                 else => null,
             };
         }
@@ -155,17 +155,17 @@ const PrattParser = struct {
     }
 
     inline fn parseIdent(p: *Parser) Expression {
-        std.debug.assert(p.curr_token != null and p.curr_token.? == .ident);
+        std.debug.assert(p.curr_token.? == .ident);
         return Expression{ .ident = p.curr_token.?.ident };
     }
 
     inline fn parseInt(p: *Parser) !Expression {
-        std.debug.assert(p.curr_token != null and p.curr_token.? == .int);
+        std.debug.assert(p.curr_token.? == .int);
         return Expression{ .int = try std.fmt.parseInt(u64, p.curr_token.?.int, 10) };
     }
 
     fn parsePrefixExpr(p: *Parser, alloc: Allocator) !Expression {
-        std.debug.assert(p.curr_token != null and (p.curr_token.? == .minus or p.curr_token.? == .bang));
+        std.debug.assert(p.curr_token.? == .minus or p.curr_token.? == .bang);
 
         const op = UnaryOp.fromToken(p.curr_token.?).?;
         p.advanceTokens();
@@ -178,10 +178,7 @@ const PrattParser = struct {
     }
 
     fn isInfix(tok: Token) bool {
-        return switch (tok) {
-            .plus, .minus, .star, .slash, .eq, .neq, .lt, .gt, .leq, .geq => true,
-            else => false,
-        };
+        return BinOp.fromToken(tok) != null;
     }
 
     fn parseInfixExpr(p: *Parser, left: Expression, alloc: Allocator) !Expression {
