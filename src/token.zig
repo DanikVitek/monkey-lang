@@ -21,6 +21,8 @@ pub const Token = union(enum) {
     star,
     /// `/`
     slash,
+    /// `%`
+    percent,
     /// `<`
     lt,
     /// `>`
@@ -78,6 +80,7 @@ pub const Token = union(enum) {
             .minus => std.fmt.format(writer, "-", .{}),
             .star => std.fmt.format(writer, "*", .{}),
             .slash => std.fmt.format(writer, "/", .{}),
+            .percent => std.fmt.format(writer, "%", .{}),
             .lt => std.fmt.format(writer, "<", .{}),
             .gt => std.fmt.format(writer, ">", .{}),
             .bang => std.fmt.format(writer, "!", .{}),
