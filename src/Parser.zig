@@ -11,17 +11,13 @@ const BinOp = Expression.BinOp;
 const UnaryOp = Expression.UnaryOp;
 
 lexer: *Lexer,
-curr_token: ?Token,
-peek_token: ?Token,
+curr_token: ?Token = null,
+peek_token: ?Token = null,
 
 const Parser = @This();
 
 pub fn init(lexer: *Lexer) Parser {
-    var p = Parser{
-        .lexer = lexer,
-        .curr_token = null,
-        .peek_token = null,
-    };
+    var p = Parser{ .lexer = lexer };
 
     p.advanceTokens();
     p.advanceTokens();
@@ -438,52 +434,52 @@ test "infix expression" {
 
 test "operator precedence parsing" {
     const cases = comptime [_]struct { []const u8, []const u8 }{ .{
-        "-a * b",
-        "((-a) * b)",
+        "-a * b;",
+        "((-a) * b);",
     }, .{
-        "!-a",
-        "(!(-a))",
+        "!-a;",
+        "(!(-a));",
     }, .{
-        "a + b + c",
-        "((a + b) + c)",
+        "a + b + c;",
+        "((a + b) + c);",
     }, .{
-        "a + b - c",
-        "((a + b) - c)",
+        "a + b - c;",
+        "((a + b) - c);",
     }, .{
-        "a * b * c",
-        "((a * b) * c)",
+        "a * b * c;",
+        "((a * b) * c);",
     }, .{
-        "a * b / c",
-        "((a * b) / c)",
+        "a * b / c;",
+        "((a * b) / c);",
     }, .{
-        "a + b / c",
-        "(a + (b / c))",
+        "a + b / c;",
+        "(a + (b / c));",
     }, .{
-        "a + b * c + d / e - f",
-        "(((a + (b * c)) + (d / e)) - f)",
+        "a + b * c + d / e - f;",
+        "(((a + (b * c)) + (d / e)) - f);",
     }, .{
-        "3 + 4; -5 * 5",
-        "(3 + 4)((-5) * 5)",
+        "3 + 4; -5 * 5;",
+        "(3 + 4);((-5) * 5);",
     }, .{
-        "5 > 4 == 3 < 4",
-        "((5 > 4) == (3 < 4))",
+        "5 > 4 == 3 < 4;",
+        "((5 > 4) == (3 < 4));",
     }, .{
-        "5 < 4 != 3 > 4",
-        "((5 < 4) != (3 > 4))",
+        "5 < 4 != 3 > 4;",
+        "((5 < 4) != (3 > 4));",
     }, .{
-        "3 + 4 * 5 == 3 * 1 + 4 * 5",
-        "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))",
+        "3 + 4 * 5 == 3 * 1 + 4 * 5;",
+        "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)));",
     } };
 
     inline for (cases) |case| {
-        var lexer = try Lexer.init(case[0] ++ ";");
+        var lexer = try Lexer.init(case[0]);
         var parser = Parser.init(&lexer);
 
         const ast = try parser.parseProgram(testing.allocator);
         defer ast.deinit(testing.allocator);
         const program = ast.program;
 
-        try testing.expectEqual(std.mem.count(u8, case[0], ";") + 1, program.len);
+        try testing.expectEqual(std.mem.count(u8, case[0], ";"), program.len);
         // catch |err| {
         //     std.log.err("case: \"{s}\"", .{case[0]});
         //     const slice = program.slice();
@@ -498,7 +494,7 @@ test "operator precedence parsing" {
 
         const slice = program.slice();
         for (0..slice.len) |i| {
-            try std.fmt.format(concatenated.writer(), "{}", .{program.get(i).expr});
+            try std.fmt.format(concatenated.writer(), "{}", .{slice.get(i)});
         }
 
         try testing.expectEqualStrings(case[1], concatenated.items);

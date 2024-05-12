@@ -24,6 +24,16 @@ pub const Statement = union(enum) {
             inline else => |stmt| stmt.deinit(alloc),
         }
     }
+
+    pub fn format(value: Statement, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = options;
+        return switch (value) {
+            .let => |stmt| std.fmt.format(writer, "let {s} = {};", .{ stmt.name, stmt.value }),
+            .@"return" => |expr| std.fmt.format(writer, "return {};", .{expr}),
+            .expr => |expr| std.fmt.format(writer, "{};", .{expr}),
+        };
+    }
 };
 
 pub const Expression = union(enum) {
