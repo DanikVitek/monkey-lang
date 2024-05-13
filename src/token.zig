@@ -55,7 +55,7 @@ pub const Token = union(enum) {
 
     // keywords
     /// `fn`
-    function,
+    func,
     /// `let`
     let,
     /// `true`
@@ -94,7 +94,7 @@ pub const Token = union(enum) {
             .geq => writer.writeAll(">="),
             .eq => writer.writeAll("=="),
             .neq => writer.writeAll("!="),
-            .function => writer.writeAll("fn"),
+            .func => writer.writeAll("fn"),
             .let => writer.writeAll("let"),
             .true => writer.writeAll("true"),
             .false => writer.writeAll("false"),

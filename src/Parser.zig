@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayListUnmanaged;
 const MultiArrayList = std.MultiArrayList;
 
 const Lexer = @import("Lexter.zig");
@@ -175,6 +176,7 @@ const PrattParser = struct {
                 break :b .{ .block = try parseBlockExpr(p, alloc) };
             },
             .@"if" => parseIfExpr(p, alloc),
+            .func => parseFuncExpr(p, alloc),
             else => b: {
                 std.log.err("No prefix parse function for '{s}'", .{curr_tok});
                 break :b error.UnexpectedToken;
@@ -293,8 +295,8 @@ const PrattParser = struct {
     fn parseBlockExpr(p: *Parser, alloc: Allocator) !BlockExpr {
         std.debug.assert(p.curr_token.? == .lbrace);
 
-        var body: MultiArrayList(Statement) = .{};
-        errdefer (BlockExpr{ .body = body }).deinit(alloc);
+        var program: MultiArrayList(Statement) = .{};
+        errdefer (BlockExpr{ .program = program }).deinit(alloc);
 
         p.advanceTokens();
 
@@ -311,7 +313,7 @@ const PrattParser = struct {
                 else => return err,
             }) |stmt| {
                 errdefer stmt.deinit(alloc);
-                try body.append(alloc, stmt);
+                try program.append(alloc, stmt);
             }
             p.advanceTokens();
             prev_parser = p.*;
@@ -338,7 +340,52 @@ const PrattParser = struct {
 
         if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;
 
-        return BlockExpr{ .body = body, .@"return" = @"return" };
+        return BlockExpr{ .program = program, .@"return" = @"return" };
+    }
+
+    fn parseFuncExpr(p: *Parser, alloc: Allocator) !Expression {
+        std.debug.assert(p.currTokenIs(.func));
+
+        try p.expectPeek(.lparen, error.ExpectedLParen);
+
+        var params = try parseFuncParams(p, alloc);
+        errdefer params.deinit(alloc);
+
+        try p.expectPeek(.lbrace, error.ExpectedLBrace);
+
+        const body = try parseBlockExpr(p, alloc);
+
+        return Expression{ .func = .{ .params = params, .body = body } };
+    }
+
+    fn parseFuncParams(p: *Parser, alloc: Allocator) !ArrayList([]const u8) {
+        var params = ArrayList([]const u8){};
+        errdefer params.deinit(alloc);
+
+        if (p.peekTokenIs(.rparen)) {
+            p.advanceTokens();
+            return params;
+        }
+
+        p.advanceTokens();
+
+        if (p.currTokenIs(.ident)) {
+            try params.append(alloc, p.curr_token.?.ident);
+        } else return error.ExpectedIdent;
+
+        while (p.peekTokenIs(.comma)) {
+            p.advanceTokens();
+            p.advanceTokens();
+            switch (p.curr_token orelse return error.UnexpectedEof) {
+                .ident => |name| try params.append(alloc, name),
+                .rparen => return params,
+                else => return error.ExpectedIdent,
+            }
+        }
+
+        try p.expectPeek(.rparen, error.ExpectedRParen);
+
+        return params;
     }
 };
 
@@ -706,7 +753,7 @@ test "if expression" {
         expr.cond.*,
     );
 
-    try testing.expectEqual(@as(usize, 0), expr.conseq.body.len);
+    try testing.expectEqual(@as(usize, 0), expr.conseq.program.len);
     try testing.expectEqualDeep(
         &Expression{ .ident = "x" },
         expr.conseq.@"return",
@@ -741,16 +788,74 @@ test "if/else expression" {
         expr.cond.*,
     );
 
-    try testing.expectEqual(@as(usize, 0), expr.conseq.body.len);
+    try testing.expectEqual(@as(usize, 0), expr.conseq.program.len);
     try testing.expectEqualDeep(
         &Expression{ .ident = "x" },
         expr.conseq.@"return",
     );
 
     try testing.expect(expr.alt != null);
-    try testing.expectEqual(@as(usize, 0), expr.alt.?.body.len);
+    try testing.expectEqual(@as(usize, 0), expr.alt.?.program.len);
     try testing.expectEqualDeep(
         &Expression{ .ident = "y" },
         expr.alt.?.@"return",
     );
+}
+
+test "fn parsing" {
+    const input = "fn(x, y) { (); x + y }";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    const ast = try parser.parseProgram(testing.allocator);
+    defer ast.deinit(testing.allocator);
+    const program = ast.program;
+
+    try testing.expectEqual(@as(usize, 1), program.len);
+
+    const expr = program.get(0).expr.func;
+
+    try testing.expectEqual(@as(usize, 2), expr.params.items.len);
+    try testing.expectEqualStrings("x", expr.params.items[0]);
+    try testing.expectEqualStrings("y", expr.params.items[1]);
+
+    try testing.expectEqual(@as(usize, 1), expr.body.program.len);
+    try testing.expectEqualDeep(Statement{ .expr = .unit }, expr.body.program.get(0));
+    try testing.expectEqualDeep(
+        &Expression{ .bin_op = .{
+            .left = &Expression{ .ident = "x" },
+            .op = BinOp.add,
+            .right = &Expression{ .ident = "y" },
+        } },
+        expr.body.@"return",
+    );
+}
+
+test "fn parameters parsing" {
+    const cases = comptime [_]struct { []const u8, []const []const u8 }{
+        .{ "fn() {}", &.{} },
+        .{ "fn(x) {}", &.{"x"} },
+        .{ "fn(x,) {}", &.{"x"} },
+        .{ "fn(x, y, z) {}", &.{ "x", "y", "z" } },
+        .{ "fn(x, y, z,) {}", &.{ "x", "y", "z" } },
+    };
+
+    inline for (cases) |case| {
+        var lexer = try Lexer.init(case[0]);
+        var parser = Parser.init(&lexer);
+
+        const ast = try parser.parseProgram(testing.allocator);
+        defer ast.deinit(testing.allocator);
+        const program = ast.program;
+
+        try testing.expectEqual(@as(usize, 1), program.len);
+
+        const expr = program.get(0).expr.func;
+
+        try testing.expectEqual(case[1].len, expr.params.items.len);
+        for (case[1], expr.params.items) |expected_param, actual_param| {
+            try testing.expectEqualStrings(expected_param, actual_param);
+        }
+    }
 }
