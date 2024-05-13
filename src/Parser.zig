@@ -10,7 +10,7 @@ const Expression = Ast.Expression;
 const BinOp = Expression.BinOp;
 const UnaryOp = Expression.UnaryOp;
 const IfExpr = Expression.IfExpr;
-const BlockStmt = Statement.BlockStmt;
+const BlockExpr = Expression.BlockExpr;
 
 lexer: *Lexer,
 curr_token: ?Token = null,
@@ -37,6 +37,7 @@ pub fn parseProgram(self: *Parser, alloc: Allocator) !Ast {
     errdefer (Ast{ .program = program }).deinit(alloc);
 
     while (try self.parseStmt(alloc)) |statement| : (self.advanceTokens()) {
+        errdefer statement.deinit(alloc);
         try program.append(alloc, statement);
     }
 
@@ -75,19 +76,21 @@ fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
     std.debug.assert(self.curr_token.? == .@"return");
 
     self.advanceTokens();
-    const value = try PrattParser.parseExpr(self, .lowest, alloc);
-    errdefer value.deinit(alloc);
+    const expr = try PrattParser.parseExpr(self, .lowest, alloc);
+    errdefer expr.deinit(alloc);
 
     try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
-    return Statement{ .@"return" = value };
+    return Statement{ .@"return" = expr };
 }
 
 fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
     const expr = try PrattParser.parseExpr(self, .lowest, alloc);
+    errdefer expr.deinit(alloc);
 
-    // optional `;`
-    if (self.peekTokenIs(.semicolon)) {
+    if (!self.currTokenIs(.rbrace)) {
+        try self.expectPeek(.semicolon, error.ExpectedSemicolon);
+    } else if (self.peekTokenIs(.semicolon)) {
         self.advanceTokens();
     }
 
@@ -164,6 +167,13 @@ const PrattParser = struct {
             .int => parseInt(p),
             .bang, .minus => parsePrefixExpr(p, alloc),
             .lparen => parseGroupExpr(p, alloc),
+            .lbrace => b: {
+                if (p.peekTokenIs(.rbrace)) {
+                    p.advanceTokens();
+                    break :b Expression.unit;
+                }
+                break :b .{ .block = try parseBlockExpr(p, alloc) };
+            },
             .@"if" => parseIfExpr(p, alloc),
             else => b: {
                 std.log.err("No prefix parse function for '{s}'", .{curr_tok});
@@ -235,6 +245,10 @@ const PrattParser = struct {
         std.debug.assert(p.curr_token.? == .lparen);
         p.advanceTokens();
 
+        if (p.currTokenIs(.rparen)) {
+            return Expression.unit;
+        }
+
         const expr = try parseExpr(p, .lowest, alloc);
         errdefer expr.deinit(alloc);
 
@@ -251,23 +265,23 @@ const PrattParser = struct {
         p.advanceTokens();
         const cond = try parseExpr(p, .lowest, alloc);
         errdefer cond.deinit(alloc);
-        const boxed_cond = try alloc.create(Expression);
-        errdefer alloc.destroy(boxed_cond);
-        boxed_cond.* = cond;
 
         try p.expectPeek(.rparen, error.ExpectedRParen);
         try p.expectPeek(.lbrace, error.ExpectedLBrace);
 
-        const conseq = try parseBlockStmt(p, alloc);
+        const conseq = try parseBlockExpr(p, alloc);
         errdefer conseq.deinit(alloc);
 
-        const alt: ?BlockStmt = if (p.peekTokenIs(.@"else")) b: {
+        const alt: ?BlockExpr = if (p.peekTokenIs(.@"else")) b: {
             p.advanceTokens();
 
             try p.expectPeek(.lbrace, error.ExpectedLBrace);
 
-            break :b try parseBlockStmt(p, alloc);
+            break :b try parseBlockExpr(p, alloc);
         } else null;
+
+        const boxed_cond = try alloc.create(Expression);
+        boxed_cond.* = cond;
 
         return Expression{ .@"if" = IfExpr{
             .cond = boxed_cond,
@@ -276,24 +290,55 @@ const PrattParser = struct {
         } };
     }
 
-    fn parseBlockStmt(p: *Parser, alloc: Allocator) !BlockStmt {
+    fn parseBlockExpr(p: *Parser, alloc: Allocator) !BlockExpr {
         std.debug.assert(p.curr_token.? == .lbrace);
 
-        var stmts: MultiArrayList(Statement) = .{};
-        errdefer (BlockStmt{ .program = stmts }).deinit(alloc);
+        var body: MultiArrayList(Statement) = .{};
+        errdefer (BlockExpr{ .body = body }).deinit(alloc);
 
         p.advanceTokens();
 
+        var prev_parser = p.*;
+        var prev_lexer = prev_parser.lexer.*;
+
+        var not_stmt = false;
         while (p.curr_token != null and !p.currTokenIs(.rbrace)) {
-            if (try p.parseStmt(alloc)) |stmt| {
+            if (p.parseStmt(alloc) catch |err| switch (err) {
+                error.ExpectedSemicolon => {
+                    not_stmt = true;
+                    break;
+                },
+                else => return err,
+            }) |stmt| {
                 errdefer stmt.deinit(alloc);
-                try stmts.append(alloc, stmt);
+                try body.append(alloc, stmt);
             }
             p.advanceTokens();
+            prev_parser = p.*;
+            prev_lexer = prev_parser.lexer.*;
         }
+
+        const @"return": ?*const Expression = if (not_stmt) b: {
+            prev_parser.lexer.* = prev_lexer;
+            p.* = prev_parser;
+
+            const expr = try parseExpr(p, .lowest, alloc);
+            errdefer expr.deinit(alloc);
+
+            try p.expectPeek(.rbrace, error.ExpectedRBrace);
+
+            const boxed_expr = try alloc.create(Expression);
+            boxed_expr.* = expr;
+
+            break :b boxed_expr;
+        } else null;
+        errdefer if (@"return") |expr| {
+            expr.deinit(alloc);
+        };
+
         if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;
 
-        return BlockStmt{ .program = stmts };
+        return BlockExpr{ .body = body, .@"return" = @"return" };
     }
 };
 
@@ -320,10 +365,10 @@ test "let statements" {
     };
 
     const statements = program.slice();
-    for (statements.items(.tags), statements.items(.data), cases) |tag, data, case| {
-        try testing.expectEqual(.let, tag);
-        try testing.expectEqualStrings(case[0], data.let.name);
-        try testing.expectEqual(case[1], data.let.value);
+    for (0..statements.len, cases) |i, case| {
+        const stmt = statements.get(i);
+        try testing.expectEqualStrings(case[0], stmt.let.name);
+        try testing.expectEqual(case[1], stmt.let.value);
     }
 }
 
@@ -348,9 +393,32 @@ test "return statement" {
     };
 
     const statements = program.slice();
-    for (statements.items(.tags), statements.items(.data), cases) |tag, data, case| {
-        try testing.expectEqual(.@"return", tag);
-        try testing.expectEqual(case, data.@"return");
+    for (0..statements.len, cases) |i, case| {
+        const stmt = statements.get(i);
+        try testing.expectEqual(case, stmt.@"return");
+    }
+}
+
+test "unit expression" {
+    const input = "();{};";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    var program = (try parser.parseProgram(testing.allocator)).program;
+    defer program.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 2), program.len);
+
+    const cases = [_]Statement{
+        .{ .expr = .unit },
+        .{ .expr = .unit },
+    };
+
+    const statements = program.slice();
+    for (0..statements.len, cases) |i, case| {
+        const stmt = statements.get(i);
+        try testing.expectEqualDeep(case, stmt);
     }
 }
 
@@ -429,11 +497,11 @@ test "prefix expression" {
     }{ .{
         .input = "!5;",
         .op = .not,
-        .operand = Expression{ .int = 5 },
+        .operand = .{ .int = 5 },
     }, .{
         .input = "-15;",
         .op = .minus,
-        .operand = Expression{ .int = 15 },
+        .operand = .{ .int = 15 },
     } };
 
     for (cases) |case| {
@@ -638,20 +706,20 @@ test "if expression" {
         expr.cond.*,
     );
 
-    try testing.expectEqual(@as(usize, 1), expr.conseq.program.len);
+    try testing.expectEqual(@as(usize, 0), expr.conseq.body.len);
     try testing.expectEqualDeep(
-        Statement{ .expr = .{ .ident = "x" } },
-        expr.conseq.program.get(0),
+        &Expression{ .ident = "x" },
+        expr.conseq.@"return",
     );
 
     try testing.expectEqual(
-        @as(?Ast.Statement.BlockStmt, null),
+        @as(?Ast.Expression.BlockExpr, null),
         expr.alt,
     );
 }
 
 test "if/else expression" {
-    const input = "if (x < y) { x } else { y }";
+    const input = "if (x < y) { x } else { y };";
 
     var lexer = try Lexer.init(input);
     var parser = Parser.init(&lexer);
@@ -673,16 +741,16 @@ test "if/else expression" {
         expr.cond.*,
     );
 
-    try testing.expectEqual(@as(usize, 1), expr.conseq.program.len);
+    try testing.expectEqual(@as(usize, 0), expr.conseq.body.len);
     try testing.expectEqualDeep(
-        Statement{ .expr = .{ .ident = "x" } },
-        expr.conseq.program.get(0),
+        &Expression{ .ident = "x" },
+        expr.conseq.@"return",
     );
 
     try testing.expect(expr.alt != null);
-    try testing.expectEqual(@as(usize, 1), expr.alt.?.program.len);
+    try testing.expectEqual(@as(usize, 0), expr.alt.?.body.len);
     try testing.expectEqualDeep(
-        Statement{ .expr = .{ .ident = "y" } },
-        expr.alt.?.program.get(0),
+        &Expression{ .ident = "y" },
+        expr.alt.?.@"return",
     );
 }
