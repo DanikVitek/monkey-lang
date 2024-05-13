@@ -73,6 +73,7 @@ pub const Expression = union(enum) {
     @"if": IfExpr,
     block: BlockExpr,
     func: FnExpr,
+    call: CallExpr,
 
     statement: *const Statement,
 
@@ -164,6 +165,36 @@ pub const Expression = union(enum) {
                 }
             }
             try std.fmt.format(writer, ") {}", .{self.body});
+        }
+    };
+
+    pub const CallExpr = struct {
+        callee: *const Expression,
+        args: MultiArrayList(Expression),
+
+        pub fn format(self: CallExpr, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+            try std.fmt.format(writer, "{}(", .{self.callee});
+            if (self.args.len > 0) {
+                const args = self.args.slice();
+                try args.get(0).format("", .{}, writer);
+                for (1..args.len) |i| {
+                    try std.fmt.format(writer, ", {}", .{args.get(i)});
+                }
+            }
+            try writer.writeByte(')');
+        }
+
+        pub fn deinit(self: CallExpr, alloc: Allocator) void {
+            self.callee.deinit(alloc);
+            alloc.destroy(self.callee);
+            var args = self.args;
+            const slice = args.slice();
+            for (0..slice.len) |i| {
+                slice.get(i).deinit(alloc);
+            }
+            args.deinit(alloc);
         }
     };
 
@@ -269,9 +300,7 @@ pub const Expression = union(enum) {
                     alt.deinit(alloc);
                 }
             },
-            .block => |expr| expr.deinit(alloc),
-            .func => |expr| expr.deinit(alloc),
-            .statement => |stmt| stmt.deinit(alloc),
+            inline .block, .func, .call, .statement => |expr| expr.deinit(alloc),
             else => {},
         }
     }
@@ -286,7 +315,7 @@ pub const Expression = union(enum) {
             .bool => |val| std.fmt.format(writer, "{}", .{val}),
             .unary_op => |expr| std.fmt.format(writer, "({}{})", .{ expr.op, expr.operand }),
             .bin_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
-            inline else => |expr| expr.format("", .{}, writer),
+            inline else => |expr| std.fmt.format(writer, "{}", .{expr}),
         };
     }
 };

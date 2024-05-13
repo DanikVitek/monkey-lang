@@ -99,7 +99,10 @@ fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
 }
 
 fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
-    if (!self.peekTokenIs(expected)) return err;
+    if (!self.peekTokenIs(expected)) {
+        // std.log.err("Expected '{}', but got '{?}'", .{ expected, self.peek_token });
+        return err;
+    }
     self.advanceTokens();
 }
 
@@ -127,6 +130,7 @@ const PrattParser = struct {
                 .lt, .gt, .leq, .geq => .@"less/greater",
                 .plus, .minus => .sum,
                 .star, .slash, .percent => .product,
+                .lparen => .call,
                 else => null,
             };
         }
@@ -154,7 +158,10 @@ const PrattParser = struct {
 
             p.advanceTokens();
 
-            left_expr = try parseInfixExpr(p, left_expr, alloc);
+            left_expr = switch (p.curr_token.?) {
+                .lparen => try parseCallExpr(p, left_expr, alloc),
+                else => try parseInfixExpr(p, left_expr, alloc),
+            };
         }
 
         return left_expr;
@@ -212,7 +219,7 @@ const PrattParser = struct {
     }
 
     fn isInfix(tok: Token) bool {
-        return BinOp.fromToken(tok) != null;
+        return tok == .lparen or BinOp.fromToken(tok) != null;
     }
 
     fn parseInfixExpr(p: *Parser, left: Expression, alloc: Allocator) !Expression {
@@ -386,6 +393,53 @@ const PrattParser = struct {
         try p.expectPeek(.rparen, error.ExpectedRParen);
 
         return params;
+    }
+
+    fn parseCallExpr(p: *Parser, callee: Expression, alloc: Allocator) !Expression {
+        var args = try parseCallArgs(p, alloc);
+        errdefer {
+            const slice = args.slice();
+            for (0..slice.len) |i| {
+                slice.get(i).deinit(alloc);
+            }
+            args.deinit(alloc);
+        }
+        const boxed_callee = try alloc.create(Expression);
+        boxed_callee.* = callee;
+
+        return Expression{ .call = .{ .callee = boxed_callee, .args = args } };
+    }
+
+    fn parseCallArgs(p: *Parser, alloc: Allocator) !MultiArrayList(Expression) {
+        var args: MultiArrayList(Expression) = .{};
+        errdefer {
+            const slice = args.slice();
+            for (0..slice.len) |i| {
+                slice.get(i).deinit(alloc);
+            }
+            args.deinit(alloc);
+        }
+
+        if (p.peekTokenIs(.rparen)) {
+            p.advanceTokens();
+            return args;
+        }
+
+        p.advanceTokens();
+        try args.append(alloc, try parseExpr(p, .lowest, alloc));
+
+        while (p.peekTokenIs(.comma)) {
+            p.advanceTokens();
+            p.advanceTokens();
+            if (p.currTokenIs(.rparen)) {
+                return args;
+            }
+            try args.append(alloc, try parseExpr(p, .lowest, alloc));
+        }
+
+        try p.expectPeek(.rparen, error.ExpectedRParen);
+
+        return args;
     }
 };
 
@@ -706,6 +760,15 @@ test "operator precedence parsing" {
     }, .{
         "!(true == true);",
         "(!(true == true));",
+    }, .{
+        "a + add(b * c) + d;",
+        "((a + add((b * c))) + d);",
+    }, .{
+        "add(a, b, 1, 2 * 3, 4 + 5, add(6, 7 * 8));",
+        "add(a, b, 1, (2 * 3), (4 + 5), add(6, (7 * 8)));",
+    }, .{
+        "add(a + b + c * d / f + g);",
+        "add((((a + b) + ((c * d) / f)) + g));",
     } };
 
     inline for (cases) |case| {
@@ -854,8 +917,68 @@ test "fn parameters parsing" {
         const expr = program.get(0).expr.func;
 
         try testing.expectEqual(case[1].len, expr.params.items.len);
-        for (case[1], expr.params.items) |expected_param, actual_param| {
-            try testing.expectEqualStrings(expected_param, actual_param);
+        inline for (0.., case[1]) |i, expected_param| {
+            try testing.expectEqualStrings(expected_param, expr.params.items[i]);
+        }
+    }
+}
+
+test "call expression parsing" {
+    const input = "add(1, 2 * 3, 4 + 5);";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    const ast = try parser.parseProgram(testing.allocator);
+    defer ast.deinit(testing.allocator);
+    const program = ast.program;
+
+    try testing.expectEqual(@as(usize, 1), program.len);
+
+    const expr = program.get(0).expr.call;
+
+    try testing.expectEqualStrings("add", expr.callee.ident);
+
+    try testing.expectEqual(@as(usize, 3), expr.args.len);
+
+    try testing.expectEqualDeep(Expression{ .int = 1 }, expr.args.get(0));
+    try testing.expectEqualDeep(Expression{ .bin_op = .{
+        .left = &Expression{ .int = 2 },
+        .op = BinOp.mul,
+        .right = &Expression{ .int = 3 },
+    } }, expr.args.get(1));
+    try testing.expectEqualDeep(Expression{ .bin_op = .{
+        .left = &Expression{ .int = 4 },
+        .op = BinOp.add,
+        .right = &Expression{ .int = 5 },
+    } }, expr.args.get(2));
+}
+
+test "call expression args parsing" {
+    const cases = comptime [_]struct { []const u8, []const []const u8 }{
+        .{ "add();", &.{} },
+        .{ "add(1);", &.{"1"} },
+        .{ "add(1,);", &.{"1"} },
+        .{ "add(1, 2 * 3, 4 + 5);", &.{ "1", "(2 * 3)", "(4 + 5)" } },
+        .{ "add(1, 2 * 3, 4 + 5,);", &.{ "1", "(2 * 3)", "(4 + 5)" } },
+    };
+
+    inline for (cases) |case| {
+        var lexer = try Lexer.init(case[0]);
+        var parser = Parser.init(&lexer);
+
+        const ast = try parser.parseProgram(testing.allocator);
+        defer ast.deinit(testing.allocator);
+        const program = ast.program;
+
+        try testing.expectEqual(@as(usize, 1), program.len);
+
+        const expr = program.get(0).expr.call;
+
+        try testing.expectEqual(case[1].len, expr.args.len);
+        const args = expr.args.slice();
+        inline for (0.., case[1]) |i, expected_param| {
+            try testing.expectFmt(expected_param, "{}", .{args.get(i)});
         }
     }
 }
