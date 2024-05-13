@@ -9,6 +9,8 @@ const Statement = Ast.Statement;
 const Expression = Ast.Expression;
 const BinOp = Expression.BinOp;
 const UnaryOp = Expression.UnaryOp;
+const IfExpr = Expression.IfExpr;
+const BlockStmt = Statement.BlockStmt;
 
 lexer: *Lexer,
 curr_token: ?Token = null,
@@ -84,7 +86,10 @@ fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
 fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
     const expr = try PrattParser.parseExpr(self, .lowest, alloc);
 
-    try self.expectPeek(.semicolon, error.ExpectedSemicolon);
+    // optional `;`
+    if (self.peekTokenIs(.semicolon)) {
+        self.advanceTokens();
+    }
 
     return Statement{ .expr = expr };
 }
@@ -94,11 +99,11 @@ fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeO
     self.advanceTokens();
 }
 
-fn currTokenIs(self: *const Parser, tok: std.meta.Tag(Token)) bool {
+inline fn currTokenIs(self: *const Parser, tok: std.meta.Tag(Token)) bool {
     return self.curr_token != null and self.curr_token.? == tok;
 }
 
-fn peekTokenIs(self: *const Parser, tok: std.meta.Tag(Token)) bool {
+inline fn peekTokenIs(self: *const Parser, tok: std.meta.Tag(Token)) bool {
     return self.peek_token != null and self.peek_token.? == tok;
 }
 
@@ -127,7 +132,13 @@ const PrattParser = struct {
         UnexpectedEof,
         UnexpectedToken,
         Unimplemented,
+        ExpectedLParen,
         ExpectedRParen,
+        ExpectedLBrace,
+        ExpectedRBrace,
+        ExpectedIdent,
+        ExpectedAssign,
+        ExpectedSemicolon,
     } || std.fmt.ParseIntError || Allocator.Error;
 
     pub fn parseExpr(p: *Parser, precedence: Precedence, alloc: Allocator) ParseExprError!Expression {
@@ -153,6 +164,7 @@ const PrattParser = struct {
             .int => parseInt(p),
             .bang, .minus => parsePrefixExpr(p, alloc),
             .lparen => parseGroupExpr(p, alloc),
+            .@"if" => parseIfExpr(p, alloc),
             else => b: {
                 std.log.err("No prefix parse function for '{s}'", .{curr_tok});
                 break :b error.UnexpectedToken;
@@ -229,6 +241,59 @@ const PrattParser = struct {
         try p.expectPeek(.rparen, error.ExpectedRParen);
 
         return expr;
+    }
+
+    fn parseIfExpr(p: *Parser, alloc: Allocator) !Expression {
+        std.debug.assert(p.curr_token.? == .@"if");
+
+        try p.expectPeek(.lparen, error.ExpectedLParen);
+
+        p.advanceTokens();
+        const cond = try parseExpr(p, .lowest, alloc);
+        errdefer cond.deinit(alloc);
+        const boxed_cond = try alloc.create(Expression);
+        errdefer alloc.destroy(boxed_cond);
+        boxed_cond.* = cond;
+
+        try p.expectPeek(.rparen, error.ExpectedRParen);
+        try p.expectPeek(.lbrace, error.ExpectedLBrace);
+
+        const conseq = try parseBlockStmt(p, alloc);
+        errdefer conseq.deinit(alloc);
+
+        const alt: ?BlockStmt = if (p.peekTokenIs(.@"else")) b: {
+            p.advanceTokens();
+
+            try p.expectPeek(.lbrace, error.ExpectedLBrace);
+
+            break :b try parseBlockStmt(p, alloc);
+        } else null;
+
+        return Expression{ .@"if" = IfExpr{
+            .cond = boxed_cond,
+            .conseq = conseq,
+            .alt = alt,
+        } };
+    }
+
+    fn parseBlockStmt(p: *Parser, alloc: Allocator) !BlockStmt {
+        std.debug.assert(p.curr_token.? == .lbrace);
+
+        var stmts: MultiArrayList(Statement) = .{};
+        errdefer (BlockStmt{ .program = stmts }).deinit(alloc);
+
+        p.advanceTokens();
+
+        while (p.curr_token != null and !p.currTokenIs(.rbrace)) {
+            if (try p.parseStmt(alloc)) |stmt| {
+                errdefer stmt.deinit(alloc);
+                try stmts.append(alloc, stmt);
+            }
+            p.advanceTokens();
+        }
+        if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;
+
+        return BlockStmt{ .program = stmts };
     }
 };
 
@@ -511,6 +576,21 @@ test "operator precedence parsing" {
     }, .{
         "3 + 4 * 5 == 3 * 1 + 4 * 5;",
         "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)));",
+    }, .{
+        "1 + (2 + 3) + 4;",
+        "((1 + (2 + 3)) + 4);",
+    }, .{
+        "(5 + 5) * 2;",
+        "((5 + 5) * 2);",
+    }, .{
+        "2 / (5 + 5);",
+        "(2 / (5 + 5));",
+    }, .{
+        "-(5 + 5);",
+        "(-(5 + 5));",
+    }, .{
+        "!(true == true);",
+        "(!(true == true));",
     } };
 
     inline for (cases) |case| {
@@ -533,4 +613,76 @@ test "operator precedence parsing" {
 
         try testing.expectFmt(case[1], "{}", .{ast});
     }
+}
+
+test "if expression" {
+    const input = "if (x < y) { x };";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    const ast = try parser.parseProgram(testing.allocator);
+    defer ast.deinit(testing.allocator);
+    const program = ast.program;
+
+    try testing.expectEqual(@as(usize, 1), program.len);
+
+    const expr = program.get(0).expr.@"if";
+
+    try testing.expectEqualDeep(
+        Expression{ .bin_op = .{
+            .left = &Expression{ .ident = "x" },
+            .op = BinOp.lt,
+            .right = &Expression{ .ident = "y" },
+        } },
+        expr.cond.*,
+    );
+
+    try testing.expectEqual(@as(usize, 1), expr.conseq.program.len);
+    try testing.expectEqualDeep(
+        Statement{ .expr = .{ .ident = "x" } },
+        expr.conseq.program.get(0),
+    );
+
+    try testing.expectEqual(
+        @as(?Ast.Statement.BlockStmt, null),
+        expr.alt,
+    );
+}
+
+test "if/else expression" {
+    const input = "if (x < y) { x } else { y }";
+
+    var lexer = try Lexer.init(input);
+    var parser = Parser.init(&lexer);
+
+    const ast = try parser.parseProgram(testing.allocator);
+    defer ast.deinit(testing.allocator);
+    const program = ast.program;
+
+    try testing.expectEqual(@as(usize, 1), program.len);
+
+    const expr = program.get(0).expr.@"if";
+
+    try testing.expectEqualDeep(
+        Expression{ .bin_op = .{
+            .left = &Expression{ .ident = "x" },
+            .op = BinOp.lt,
+            .right = &Expression{ .ident = "y" },
+        } },
+        expr.cond.*,
+    );
+
+    try testing.expectEqual(@as(usize, 1), expr.conseq.program.len);
+    try testing.expectEqualDeep(
+        Statement{ .expr = .{ .ident = "x" } },
+        expr.conseq.program.get(0),
+    );
+
+    try testing.expect(expr.alt != null);
+    try testing.expectEqual(@as(usize, 1), expr.alt.?.program.len);
+    try testing.expectEqualDeep(
+        Statement{ .expr = .{ .ident = "y" } },
+        expr.alt.?.program.get(0),
+    );
 }

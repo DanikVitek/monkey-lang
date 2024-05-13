@@ -12,15 +12,49 @@ pub const Statement = union(enum) {
     let: LetStmt,
     @"return": Expression,
     expr: Expression,
+    block: BlockStmt,
 
     pub const LetStmt = struct {
         name: []const u8,
         value: Expression,
     };
 
+    pub const BlockStmt = struct {
+        program: MultiArrayList(Statement) = .{},
+
+        pub fn deinit(self: BlockStmt, alloc: Allocator) void {
+            var program = self.program;
+            const stmts = program.slice();
+            for (0..stmts.len) |i| {
+                const stmt = stmts.get(i);
+                stmt.deinit(alloc);
+            }
+            program.deinit(alloc);
+        }
+
+        pub fn format(self: BlockStmt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+
+            const stmts = self.program.slice();
+            if (stmts.len > 0) {
+                try std.fmt.format(writer, "{}", .{stmts.get(0)});
+            }
+            for (1..stmts.len) |i| {
+                const stmt = stmts.get(i);
+                switch (stmt) {
+                    .let, .@"return" => {},
+                    else => try std.fmt.format(writer, ";", .{}),
+                }
+                try std.fmt.format(writer, " {}", .{stmt});
+            }
+        }
+    };
+
     pub fn deinit(self: Statement, alloc: Allocator) void {
         switch (self) {
             .let => |stmt| stmt.value.deinit(alloc),
+            .block => |stmt| stmt.deinit(alloc),
             inline else => |stmt| stmt.deinit(alloc),
         }
     }
@@ -31,7 +65,8 @@ pub const Statement = union(enum) {
         return switch (value) {
             .let => |stmt| std.fmt.format(writer, "let {s} = {};", .{ stmt.name, stmt.value }),
             .@"return" => |expr| std.fmt.format(writer, "return {};", .{expr}),
-            .expr => |expr| std.fmt.format(writer, "{};", .{expr}),
+            .expr => |expr| std.fmt.format(writer, "{}", .{expr}),
+            .block => |block| std.fmt.format(writer, "{{ {} }}", .{block}),
         };
     }
 };
@@ -57,8 +92,18 @@ pub const Expression = union(enum) {
 
     pub const IfExpr = struct {
         cond: *const Expression,
-        true_case: *const Expression,
-        false_case: *const Expression,
+        conseq: Statement.BlockStmt,
+        alt: ?Statement.BlockStmt = null,
+
+        pub fn format(expr: IfExpr, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+
+            try std.fmt.format(writer, "if ({}) {{ {} }}", .{ expr.cond, expr.conseq });
+            if (expr.alt) |alt| {
+                try std.fmt.format(writer, " else {{ {} }}", .{alt});
+            }
+        }
     };
 
     pub const UnaryOp = enum {
@@ -143,22 +188,25 @@ pub const Expression = union(enum) {
     pub fn deinit(self: Expression, alloc: Allocator) void {
         switch (self) {
             .bin_op => |expr| {
-                expr.right.deinit(alloc);
-                alloc.destroy(expr.right);
                 expr.left.deinit(alloc);
                 alloc.destroy(expr.left);
+
+                expr.right.deinit(alloc);
+                alloc.destroy(expr.right);
             },
             .unary_op => |expr| {
                 expr.operand.deinit(alloc);
                 alloc.destroy(expr.operand);
             },
             .@"if" => |expr| {
-                expr.false_case.deinit(alloc);
-                alloc.destroy(expr.false_case);
-                expr.true_case.deinit(alloc);
-                alloc.destroy(expr.true_case);
                 expr.cond.deinit(alloc);
                 alloc.destroy(expr.cond);
+
+                expr.conseq.deinit(alloc);
+
+                if (expr.alt) |alt| {
+                    alt.deinit(alloc);
+                }
             },
             else => {},
         }
@@ -173,7 +221,7 @@ pub const Expression = union(enum) {
             .bool => |val| std.fmt.format(writer, "{}", .{val}),
             .unary_op => |expr| std.fmt.format(writer, "({}{})", .{ expr.op, expr.operand }),
             .bin_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
-            .@"if" => |expr| std.fmt.format(writer, "if ({}) {{ {} }} else {{ {} }}", .{ expr.cond, expr.true_case, expr.false_case }),
+            .@"if" => |expr| std.fmt.format(writer, "{}", .{expr}),
         };
     }
 };
@@ -198,6 +246,10 @@ pub fn format(value: Ast, comptime fmt: []const u8, options: std.fmt.FormatOptio
     }
     for (1..stmts.len) |i| {
         const stmt = stmts.get(i);
+        switch (stmt) {
+            .let, .@"return" => {},
+            else => try std.fmt.format(writer, ";", .{}),
+        }
         try std.fmt.format(writer, "\n{}", .{stmt});
     }
 }
