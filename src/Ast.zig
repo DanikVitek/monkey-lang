@@ -1,4 +1,5 @@
 const std = @import("std");
+const ArrayList = std.ArrayListUnmanaged;
 const MultiArrayList = std.MultiArrayList;
 const Allocator = std.mem.Allocator;
 
@@ -71,6 +72,7 @@ pub const Expression = union(enum) {
     bin_op: BinOpExpr,
     @"if": IfExpr,
     block: BlockExpr,
+    func: FnExpr,
 
     statement: *const Statement,
 
@@ -94,19 +96,19 @@ pub const Expression = union(enum) {
             _ = fmt;
             _ = options;
 
-            try std.fmt.format(writer, "if ({}) {{ {} }}", .{ expr.cond, expr.conseq });
+            try std.fmt.format(writer, "if ({}) {}", .{ expr.cond, expr.conseq });
             if (expr.alt) |alt| {
-                try std.fmt.format(writer, " else {{ {} }}", .{alt});
+                try std.fmt.format(writer, " else {}", .{alt});
             }
         }
     };
 
     pub const BlockExpr = struct {
-        body: MultiArrayList(Statement) = .{},
+        program: MultiArrayList(Statement) = .{},
         @"return": ?*const Expression = null,
 
         pub fn deinit(self: BlockExpr, alloc: Allocator) void {
-            var program = self.body;
+            var program = self.program;
             const stmts = program.slice();
             for (0..stmts.len) |i| {
                 const stmt = stmts.get(i);
@@ -123,21 +125,45 @@ pub const Expression = union(enum) {
             _ = fmt;
             _ = options;
 
-            const stmts = self.body.slice();
-            if (stmts.len > 0) {
-                try std.fmt.format(writer, "{}", .{stmts.get(0)});
-                for (1..stmts.len) |i| {
-                    const stmt = stmts.get(i);
-                    try std.fmt.format(writer, " {}", .{stmt});
-                }
+            const stmts = self.program.slice();
+            try writer.writeByte('{');
+
+            for (0..stmts.len) |i| {
+                const stmt = stmts.get(i);
+                try std.fmt.format(writer, " {}", .{stmt});
+            }
+            if (self.@"return") |expr| {
+                try std.fmt.format(writer, " {}", .{expr});
             }
 
-            if (self.@"return") |expr| {
-                if (stmts.len > 0) {
-                    try writer.writeByte(' ');
-                }
-                try std.fmt.format(writer, "{}", .{expr});
+            if (stmts.len > 0 or self.@"return" != null) {
+                try writer.writeByte(' ');
             }
+            try writer.writeByte('}');
+        }
+    };
+
+    pub const FnExpr = struct {
+        params: ArrayList([]const u8),
+        body: BlockExpr,
+
+        pub fn deinit(self: FnExpr, alloc: Allocator) void {
+            var params = self.params;
+            params.deinit(alloc);
+            self.body.deinit(alloc);
+        }
+
+        pub fn format(self: FnExpr, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+            try writer.writeAll("fn(");
+            if (self.params.items.len > 0) {
+                try std.fmt.format(writer, "{s}", .{self.params.items[0]});
+                for (self.params.items[1..]) |param| {
+                    try std.fmt.format(writer, ", {s}", .{param});
+                }
+            }
+            try std.fmt.format(writer, ") {}", .{self.body});
         }
     };
 
@@ -244,6 +270,7 @@ pub const Expression = union(enum) {
                 }
             },
             .block => |expr| expr.deinit(alloc),
+            .func => |expr| expr.deinit(alloc),
             .statement => |stmt| stmt.deinit(alloc),
             else => {},
         }
@@ -259,9 +286,7 @@ pub const Expression = union(enum) {
             .bool => |val| std.fmt.format(writer, "{}", .{val}),
             .unary_op => |expr| std.fmt.format(writer, "({}{})", .{ expr.op, expr.operand }),
             .bin_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
-            .@"if" => |expr| expr.format("", .{}, writer),
-            .block => |block| std.fmt.format(writer, "{{ {} }}", .{block}),
-            .statement => |stmt| stmt.format("", .{}, writer),
+            inline else => |expr| expr.format("", .{}, writer),
         };
     }
 };

@@ -137,7 +137,7 @@ fn isDigit(char: ?u21) bool {
 }
 
 const Keywords = ComptimeStringMap(Token, .{
-    .{ "fn", .function },
+    .{ "fn", .func },
     .{ "let", .let },
     .{ "true", .true },
     .{ "false", .false },
@@ -192,7 +192,7 @@ test "next token" {
         .let,
         .{ .ident = "add" },
         .assign,
-        .function,
+        .func,
         .lparen,
         .{ .ident = "x" },
         .comma,
@@ -217,7 +217,7 @@ test "next token" {
         .let,
         .{ .ident = "assert" },
         .assign,
-        .function,
+        .func,
         .lparen,
         .{ .ident = "cond" },
         .rparen,
@@ -234,7 +234,7 @@ test "next token" {
         .let,
         .{ .ident = "assertNot" },
         .assign,
-        .function,
+        .func,
         .lparen,
         .{ .ident = "cond" },
         .rparen,
