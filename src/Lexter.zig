@@ -10,6 +10,22 @@ utf8: std.unicode.Utf8Iterator,
 
 const Lexer = @This();
 
+// pub const SpannedToken = struct {
+//     tok: Token,
+//     loc: Loc,
+//     span: Span,
+
+//     pub const Loc = struct {
+//         line: u32 = 1,
+//         col: u32 = 1,
+//     };
+
+//     pub const Span = struct {
+//         start: u32,
+//         end: u32,
+//     };
+// };
+
 pub fn init(input: []const u8) !Lexer {
     return .{ .utf8 = (try std.unicode.Utf8View.init(input)).iterator() };
 }

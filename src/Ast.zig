@@ -8,6 +8,24 @@ program: MultiArrayList(Statement),
 
 const Ast = @This();
 
+// pub fn Spanned(comptime T: type) type {
+//     return struct {
+//         node: T,
+//         span: Span,
+//     };
+// }
+
+// pub const Span = struct {
+//     start: Pos,
+//     end: Pos,
+// };
+
+// pub const Pos = struct {
+//     line: u32 = 1,
+//     col: u32 = 1,
+//     offset: usize = 0,
+// };
+
 pub const Statement = union(enum) {
     let: LetStmt,
     @"return": Expression,
