@@ -10,7 +10,7 @@ const Expression = Ast.Expression;
 const BinOp = Expression.BinOp;
 const UnaryOp = Expression.UnaryOp;
 const IfExpr = Expression.IfExpr;
-const BlockStmt = Statement.BlockStmt;
+const BlockExpr = Expression.BlockExpr;
 
 lexer: *Lexer,
 curr_token: ?Token = null,
@@ -68,30 +68,37 @@ fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
 
     try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
-    return Statement{ .let = .{ .name = name, .value = value } };
+    const boxed_value = try alloc.create(Expression);
+    boxed_value.* = value;
+
+    return Statement{ .let = .{ .name = name, .value = boxed_value } };
 }
 
 fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
     std.debug.assert(self.curr_token.? == .@"return");
 
     self.advanceTokens();
-    const value = try PrattParser.parseExpr(self, .lowest, alloc);
-    errdefer value.deinit(alloc);
+    const expr = try PrattParser.parseExpr(self, .lowest, alloc);
+    errdefer expr.deinit(alloc);
 
     try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
-    return Statement{ .@"return" = value };
+    const boxed_expr = try alloc.create(Expression);
+    boxed_expr.* = expr;
+
+    return Statement{ .@"return" = boxed_expr };
 }
 
 fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
     const expr = try PrattParser.parseExpr(self, .lowest, alloc);
+    errdefer expr.deinit(alloc);
 
-    // optional `;`
-    if (self.peekTokenIs(.semicolon)) {
-        self.advanceTokens();
-    }
+    try self.expectPeek(.semicolon, error.ExpectedSemicolon);
 
-    return Statement{ .expr = expr };
+    const boxed_expr = try alloc.create(Expression);
+    boxed_expr.* = expr;
+
+    return Statement{ .expr = boxed_expr };
 }
 
 fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
@@ -164,6 +171,13 @@ const PrattParser = struct {
             .int => parseInt(p),
             .bang, .minus => parsePrefixExpr(p, alloc),
             .lparen => parseGroupExpr(p, alloc),
+            .lbrace => b: {
+                if (p.peekTokenIs(.rbrace)) {
+                    p.advanceTokens();
+                    break :b Expression.unit;
+                }
+                break :b .{ .block = try parseBlockExpr(p, alloc) };
+            },
             .@"if" => parseIfExpr(p, alloc),
             else => b: {
                 std.log.err("No prefix parse function for '{s}'", .{curr_tok});
@@ -235,6 +249,10 @@ const PrattParser = struct {
         std.debug.assert(p.curr_token.? == .lparen);
         p.advanceTokens();
 
+        if (p.currTokenIs(.rparen)) {
+            return Expression.unit;
+        }
+
         const expr = try parseExpr(p, .lowest, alloc);
         errdefer expr.deinit(alloc);
 
@@ -251,23 +269,23 @@ const PrattParser = struct {
         p.advanceTokens();
         const cond = try parseExpr(p, .lowest, alloc);
         errdefer cond.deinit(alloc);
-        const boxed_cond = try alloc.create(Expression);
-        errdefer alloc.destroy(boxed_cond);
-        boxed_cond.* = cond;
 
         try p.expectPeek(.rparen, error.ExpectedRParen);
         try p.expectPeek(.lbrace, error.ExpectedLBrace);
 
-        const conseq = try parseBlockStmt(p, alloc);
+        const conseq = try parseBlockExpr(p, alloc);
         errdefer conseq.deinit(alloc);
 
-        const alt: ?BlockStmt = if (p.peekTokenIs(.@"else")) b: {
+        const alt: ?BlockExpr = if (p.peekTokenIs(.@"else")) b: {
             p.advanceTokens();
 
             try p.expectPeek(.lbrace, error.ExpectedLBrace);
 
-            break :b try parseBlockStmt(p, alloc);
+            break :b try parseBlockExpr(p, alloc);
         } else null;
+
+        const boxed_cond = try alloc.create(Expression);
+        boxed_cond.* = cond;
 
         return Expression{ .@"if" = IfExpr{
             .cond = boxed_cond,
@@ -276,24 +294,55 @@ const PrattParser = struct {
         } };
     }
 
-    fn parseBlockStmt(p: *Parser, alloc: Allocator) !BlockStmt {
+    fn parseBlockExpr(p: *Parser, alloc: Allocator) !BlockExpr {
         std.debug.assert(p.curr_token.? == .lbrace);
 
-        var stmts: MultiArrayList(Statement) = .{};
-        errdefer (BlockStmt{ .program = stmts }).deinit(alloc);
+        var body: MultiArrayList(Statement) = .{};
+        errdefer (BlockExpr{ .body = body }).deinit(alloc);
 
         p.advanceTokens();
 
+        var prev_parser = p.*;
+        var prev_lexer = prev_parser.lexer.*;
+
+        var not_stmt = false;
         while (p.curr_token != null and !p.currTokenIs(.rbrace)) {
-            if (try p.parseStmt(alloc)) |stmt| {
+            if (p.parseStmt(alloc) catch |err| switch (err) {
+                error.ExpectedSemicolon => {
+                    not_stmt = true;
+                    break;
+                },
+                else => return err,
+            }) |stmt| {
                 errdefer stmt.deinit(alloc);
-                try stmts.append(alloc, stmt);
+                try body.append(alloc, stmt);
             }
             p.advanceTokens();
+            prev_parser = p.*;
+            prev_lexer = prev_parser.lexer.*;
         }
+
+        const @"return": ?*const Expression = if (not_stmt) b: {
+            prev_parser.lexer.* = prev_lexer;
+            p.* = prev_parser;
+
+            const expr = try parseExpr(p, .lowest, alloc);
+            errdefer expr.deinit(alloc);
+
+            try p.expectPeek(.rbrace, error.ExpectedRBrace);
+
+            const boxed_expr = try alloc.create(Expression);
+            boxed_expr.* = expr;
+
+            break :b boxed_expr;
+        } else null;
+        errdefer if (@"return") |expr| {
+            expr.deinit(alloc);
+        };
+
         if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;
 
-        return BlockStmt{ .program = stmts };
+        return BlockExpr{ .body = body, .@"return" = @"return" };
     }
 };
 

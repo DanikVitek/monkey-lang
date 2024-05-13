@@ -28,51 +28,17 @@ const Ast = @This();
 
 pub const Statement = union(enum) {
     let: LetStmt,
-    @"return": Expression,
-    expr: Expression,
-    block: BlockStmt,
+    @"return": *const Expression,
+    expr: *const Expression,
 
     pub const LetStmt = struct {
         name: []const u8,
-        value: Expression,
-    };
-
-    pub const BlockStmt = struct {
-        program: MultiArrayList(Statement) = .{},
-
-        pub fn deinit(self: BlockStmt, alloc: Allocator) void {
-            var program = self.program;
-            const stmts = program.slice();
-            for (0..stmts.len) |i| {
-                const stmt = stmts.get(i);
-                stmt.deinit(alloc);
-            }
-            program.deinit(alloc);
-        }
-
-        pub fn format(self: BlockStmt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
-            _ = fmt;
-            _ = options;
-
-            const stmts = self.program.slice();
-            if (stmts.len > 0) {
-                try std.fmt.format(writer, "{}", .{stmts.get(0)});
-            }
-            for (1..stmts.len) |i| {
-                const stmt = stmts.get(i);
-                switch (stmt) {
-                    .let, .@"return" => {},
-                    else => try std.fmt.format(writer, ";", .{}),
-                }
-                try std.fmt.format(writer, " {}", .{stmt});
-            }
-        }
+        value: *const Expression,
     };
 
     pub fn deinit(self: Statement, alloc: Allocator) void {
         switch (self) {
             .let => |stmt| stmt.value.deinit(alloc),
-            .block => |stmt| stmt.deinit(alloc),
             inline else => |stmt| stmt.deinit(alloc),
         }
     }
@@ -83,19 +49,22 @@ pub const Statement = union(enum) {
         return switch (value) {
             .let => |stmt| std.fmt.format(writer, "let {s} = {};", .{ stmt.name, stmt.value }),
             .@"return" => |expr| std.fmt.format(writer, "return {};", .{expr}),
-            .expr => |expr| std.fmt.format(writer, "{}", .{expr}),
-            .block => |block| std.fmt.format(writer, "{{ {} }}", .{block}),
+            .expr => |expr| std.fmt.format(writer, "{};", .{expr}),
         };
     }
 };
 
 pub const Expression = union(enum) {
+    unit: void,
     ident: []const u8,
     int: u64,
     bool: bool,
     unary_op: UnaryOpExpr,
     bin_op: BinOpExpr,
     @"if": IfExpr,
+    block: BlockExpr,
+
+    statement: Statement,
 
     pub const UnaryOpExpr = struct {
         op: UnaryOp,
@@ -110,8 +79,8 @@ pub const Expression = union(enum) {
 
     pub const IfExpr = struct {
         cond: *const Expression,
-        conseq: Statement.BlockStmt,
-        alt: ?Statement.BlockStmt = null,
+        conseq: BlockExpr,
+        alt: ?BlockExpr = null,
 
         pub fn format(expr: IfExpr, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
             _ = fmt;
@@ -120,6 +89,46 @@ pub const Expression = union(enum) {
             try std.fmt.format(writer, "if ({}) {{ {} }}", .{ expr.cond, expr.conseq });
             if (expr.alt) |alt| {
                 try std.fmt.format(writer, " else {{ {} }}", .{alt});
+            }
+        }
+    };
+
+    pub const BlockExpr = struct {
+        body: MultiArrayList(Statement) = .{},
+        @"return": ?*const Expression = null,
+
+        pub fn deinit(self: BlockExpr, alloc: Allocator) void {
+            var program = self.body;
+            const stmts = program.slice();
+            for (0..stmts.len) |i| {
+                const stmt = stmts.get(i);
+                stmt.deinit(alloc);
+            }
+            program.deinit(alloc);
+            if (self.@"return") |expr| {
+                expr.deinit(alloc);
+                alloc.destroy(expr);
+            }
+        }
+
+        pub fn format(self: BlockExpr, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+
+            const stmts = self.body.slice();
+            if (stmts.len > 0) {
+                try std.fmt.format(writer, "{}", .{stmts.get(0)});
+                for (1..stmts.len) |i| {
+                    const stmt = stmts.get(i);
+                    try std.fmt.format(writer, " {}", .{stmt});
+                }
+            }
+
+            if (self.@"return") |expr| {
+                if (stmts.len > 0) {
+                    try writer.writeByte(' ');
+                }
+                try std.fmt.format(writer, "{}", .{expr});
             }
         }
     };
@@ -226,6 +235,7 @@ pub const Expression = union(enum) {
                     alt.deinit(alloc);
                 }
             },
+            .block => |stmt| stmt.deinit(alloc),
             else => {},
         }
     }
@@ -234,12 +244,15 @@ pub const Expression = union(enum) {
         _ = fmt;
         _ = options;
         return switch (value) {
+            .unit => writer.writeAll("()"),
             .ident => |name| std.fmt.format(writer, "{s}", .{name}),
             .int => |val| std.fmt.format(writer, "{d}", .{val}),
             .bool => |val| std.fmt.format(writer, "{}", .{val}),
             .unary_op => |expr| std.fmt.format(writer, "({}{})", .{ expr.op, expr.operand }),
             .bin_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
-            .@"if" => |expr| std.fmt.format(writer, "{}", .{expr}),
+            .@"if" => |expr| expr.format("", .{}, writer),
+            .block => |block| std.fmt.format(writer, "{{ {} }}", .{block}),
+            .statement => |stmt| stmt.format("", .{}, writer),
         };
     }
 };
@@ -263,11 +276,6 @@ pub fn format(value: Ast, comptime fmt: []const u8, options: std.fmt.FormatOptio
         try std.fmt.format(writer, "{}", .{stmt});
     }
     for (1..stmts.len) |i| {
-        const stmt = stmts.get(i);
-        switch (stmt) {
-            .let, .@"return" => {},
-            else => try std.fmt.format(writer, ";", .{}),
-        }
-        try std.fmt.format(writer, "\n{}", .{stmt});
+        try std.fmt.format(writer, "\n{}", .{stmts.get(i)});
     }
 }
