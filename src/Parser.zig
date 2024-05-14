@@ -360,7 +360,18 @@ const PrattParser = struct {
 
         try p.expectPeek(.lbrace, error.ExpectedLBrace);
 
-        const body = try parseBlockExpr(p, alloc);
+        var body = try parseBlockExpr(p, alloc);
+        if (body.program.len > 0 and body.@"return" == null) {
+            const last_stmt = body.program.get(body.program.len - 1);
+            switch (last_stmt) {
+                .@"return" => {
+                    const ret = try alloc.create(Expression);
+                    ret.* = body.program.pop().@"return";
+                    body.@"return" = ret;
+                },
+                else => {},
+            }
+        }
 
         return Expression{ .func = .{ .params = params, .body = body } };
     }

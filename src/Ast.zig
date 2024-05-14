@@ -75,8 +75,6 @@ pub const Expression = union(enum) {
     func: FnExpr,
     call: CallExpr,
 
-    statement: *const Statement,
-
     pub const UnaryOpExpr = struct {
         op: UnaryOp,
         operand: *const Expression,
@@ -300,7 +298,7 @@ pub const Expression = union(enum) {
                     alt.deinit(alloc);
                 }
             },
-            inline .block, .func, .call, .statement => |expr| expr.deinit(alloc),
+            inline .block, .func, .call => |expr| expr.deinit(alloc),
             else => {},
         }
     }
