@@ -45,7 +45,7 @@
         //},
         .pretty = .{
             .url = "https://github.com/timfayz/pretty/archive/refs/heads/main.tar.gz",
-            .hash = "122040ae04db7bfec2234e79d129534e535411d1ecea067d70f608045ababd50b409",
+            .hash = "1220ccd91f5f5e842d4f73626f1ebbf6a0a8517fafb7bdc047791a6c96cd2698e850",
         },
     },
 

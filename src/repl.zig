@@ -16,7 +16,6 @@ const PROMPT = ">> ";
 
 pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
     var buf = ArrayList(u8).init(alloc);
-    // defer buf.deinit();
 
     while (true) {
         defer buf.clearRetainingCapacity();
@@ -39,20 +38,20 @@ pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
         const slice = ast.program.slice();
 
         const opts: pretty.Options = .{
-            .max_depth = 10,
+            .max_depth = 0,
             // .show_type_names = false,
-            .empty_line_at_end = true,
+            .print_extra_empty_line = true,
             .slice_u8_is_str = true,
         };
 
         for (0..slice.len) |i| {
-            var output = try pretty.dumpAsList(alloc, slice.get(i), opts);
+            var output = try pretty.dumpList(alloc, slice.get(i), opts);
             defer output.deinit();
 
             // [Option] If custom formatting is not specified
             if (opts.fmt.len == 0) {
                 // [Option] Insert an extra newline (to stack up multiple outputs)
-                try output.appendSlice(if (opts.empty_line_at_end) "\n\n" else "\n");
+                try output.appendSlice(if (opts.print_extra_empty_line) "\n\n" else "\n");
             }
 
             try std.fmt.format(out, "{s}", .{output.items});
