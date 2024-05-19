@@ -39,22 +39,13 @@ pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
 
         const opts: pretty.Options = .{
             .max_depth = 0,
-            // .show_type_names = false,
-            .print_extra_empty_line = true,
             .slice_u8_is_str = true,
         };
 
         for (0..slice.len) |i| {
             var output = try pretty.dumpList(alloc, slice.get(i), opts);
             defer output.deinit();
-
-            // [Option] If custom formatting is not specified
-            if (opts.fmt.len == 0) {
-                // [Option] Insert an extra newline (to stack up multiple outputs)
-                try output.appendSlice(if (opts.print_extra_empty_line) "\n\n" else "\n");
-            }
-
-            try std.fmt.format(out, "{s}", .{output.items});
+            try std.fmt.format(out, "{s}\n\n", .{output.items});
         }
         try std.fmt.format(out, "{}\n\n", .{ast});
     }
