@@ -44,8 +44,8 @@
         //    .lazy = false,
         //},
         .pretty = .{
-            .url = "https://github.com/timfayz/pretty/archive/refs/heads/main.tar.gz",
-            .hash = "1220ccd91f5f5e842d4f73626f1ebbf6a0a8517fafb7bdc047791a6c96cd2698e850",
+            .url = "https://github.com/timfayz/pretty/archive/v0.10.1.tar.gz", //refs/heads/main.tar.gz",
+            .hash = "12209038b41223420c83594eff502c7fdbe53f3482923feb0e49a2410383483c0f6b",
         },
     },
 

@@ -73,7 +73,7 @@ pub fn nextToken(self: *Lexer) ?Token {
             break :blk .{ .int = literal };
         } else blk: {
             const len = std.unicode.utf8CodepointSequenceLength(ch) catch unreachable;
-            break :blk .{ .illegal = self.utf8.bytes[self.position .. self.position + len] };
+            break :blk .{ .illegal = self.utf8.bytes[self.position..][0..len] };
         },
     };
 }
