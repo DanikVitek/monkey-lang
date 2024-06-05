@@ -57,9 +57,15 @@ fn evalNotOp(operand: Object) Object {
 }
 
 fn evalMinusOp(operand: Object, alloc: Allocator) !Object {
-    _ = operand;
-    _ = alloc;
-    @panic("Unimplemented");
+    return switch (operand.objectType()) {
+        .integer => {
+            const int: *const Integer = @ptrCast(@alignCast(operand.ptr));
+            const obj = try alloc.create(Integer);
+            obj.* = .{ .sign = int.sign.opposite(), .value = int.value };
+            return obj.object();
+        },
+        else => Object.NULL, // TODO: handle properly
+    };
 }
 
 const testing = std.testing;
@@ -79,24 +85,11 @@ test "eval integer expression" {
 
     inline for (cases, 0..) |case, i| {
         const evaluated = try testEval(case.input, alloc);
-        testIntegerObject(evaluated, case.expected, alloc) catch |err| {
+        testIntegerObject(evaluated, .{ .plus, case.expected }, alloc) catch |err| {
             std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
             return err;
         };
     }
-}
-
-fn testIntegerObject(obj: Object, expected: u64, alloc: Allocator) !void {
-    const object_type = obj.objectType();
-    testing.expectEqual(.integer, object_type) catch |err| {
-        std.debug.print("Object is not integer. Got .{s} ({s})", .{
-            @tagName(object_type),
-            (try obj.inspect(alloc)).value(),
-        });
-        return err;
-    };
-    const int: *const Integer = @ptrCast(@alignCast(obj.ptr));
-    try testing.expectEqual(expected, int.value);
 }
 
 test "eval bool expression" {
@@ -121,20 +114,7 @@ test "eval bool expression" {
     }
 }
 
-fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
-    const object_type = obj.objectType();
-    testing.expectEqual(.boolean, object_type) catch |err| {
-        std.debug.print("Object is not boolean. Got .{s} ({s})", .{
-            @tagName(object_type),
-            (try obj.inspect(alloc)).value(),
-        });
-        return err;
-    };
-    const int: *const Boolean = @ptrCast(@alignCast(obj.ptr));
-    try testing.expectEqual(expected, int.value);
-}
-
-test "eval 'not' operator" {
+test "eval `!` operator" {
     const cases = [_]struct {
         input: []const u8,
         expected: bool,
@@ -156,6 +136,57 @@ test "eval 'not' operator" {
             return err;
         };
     }
+}
+
+test "eval `-` operator" {
+    const cases = [_]struct {
+        input: []const u8,
+        expected: struct { Integer.Sign, u64 },
+    }{
+        .{ .input = "-5;", .expected = .{ .minus, 5 } },
+        .{ .input = "-10;", .expected = .{ .minus, 10 } },
+        .{ .input = "--5;", .expected = .{ .plus, 5 } },
+        .{ .input = "--10;", .expected = .{ .plus, 10 } },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    inline for (cases, 0..) |case, i| {
+        const evaluated = try testEval(case.input, alloc);
+        testIntegerObject(evaluated, case.expected, alloc) catch |err| {
+            std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+            return err;
+        };
+    }
+}
+
+fn testIntegerObject(obj: Object, expected: struct { Integer.Sign, u64 }, alloc: Allocator) !void {
+    const object_type = obj.objectType();
+    testing.expectEqual(.integer, object_type) catch |err| {
+        std.debug.print("Object is not integer. Got .{s} ({s})", .{
+            @tagName(object_type),
+            (try obj.inspect(alloc)).value(),
+        });
+        return err;
+    };
+    const int: *const Integer = @ptrCast(@alignCast(obj.ptr));
+    try testing.expectEqual(expected[0], int.sign);
+    try testing.expectEqual(expected[1], int.value);
+}
+
+fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
+    const object_type = obj.objectType();
+    testing.expectEqual(.boolean, object_type) catch |err| {
+        std.debug.print("Object is not boolean. Got .{s} ({s})", .{
+            @tagName(object_type),
+            (try obj.inspect(alloc)).value(),
+        });
+        return err;
+    };
+    const int: *const Boolean = @ptrCast(@alignCast(obj.ptr));
+    try testing.expectEqual(expected, int.value);
 }
 
 const Lexer = @import("Lexer.zig");

@@ -49,6 +49,13 @@ pub const Integer = struct {
                 .minus => "-",
             };
         }
+
+        pub fn opposite(self: Sign) Sign {
+            return switch (self) {
+                .plus => .minus,
+                .minus => .plus,
+            };
+        }
     };
 
     pub fn inspect(ctx: *const anyopaque, alloc: Allocator) !String {
