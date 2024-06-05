@@ -1,0 +1,97 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const trait = @import("lib.zig").trait;
+const MaybeOwnedSlice = @import("lib.zig").MaybeOwnedSlice;
+
+const String = MaybeOwnedSlice(u8, null);
+
+pub const Object = struct {
+    ptr: *const anyopaque,
+    vtable: *const VTable,
+
+    const VTable = struct {
+        inspectFn: *const fn (ctx: *const anyopaque, alloc: Allocator) Allocator.Error!String,
+        object_type: ObjectType,
+    };
+
+    pub inline fn inspect(self: Object, alloc: Allocator) Allocator.Error!String {
+        return self.vtable.inspectFn(self.ptr, alloc);
+    }
+
+    pub inline fn objectType(self: Object) ObjectType {
+        return self.vtable.object_type;
+    }
+};
+pub const ObjectType = enum {
+    null,
+    integer,
+    boolean,
+};
+
+pub const Integer = struct {
+    sign: enum { plus, minus } = .plus,
+    value: u64,
+
+    pub const object_type: ObjectType = ObjectType.integer;
+
+    pub fn inspect(ctx: *const anyopaque, alloc: Allocator) !String {
+        const self: *const Integer = @ptrCast(@alignCast(ctx));
+        return .{ .owned = try std.fmt.allocPrint(alloc, "{s}{d}", .{
+            switch (self.sign) {
+                .plus => "",
+                .minus => "-",
+            },
+            self.value,
+        }) };
+    }
+
+    pub fn object(self: *const Integer) Object {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .inspectFn = inspect,
+                .object_type = object_type,
+            },
+        };
+    }
+};
+
+pub const Boolean = struct {
+    value: bool,
+
+    pub const object_type: ObjectType = ObjectType.boolean;
+
+    pub fn inspect(ctx: *const anyopaque, _: Allocator) !String {
+        const self: *const Boolean = @ptrCast(@alignCast(ctx));
+        return .{ .borrowed = if (self.value) "true" else "false" };
+    }
+
+    pub fn object(self: *const Boolean) Object {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .inspectFn = inspect,
+                .object_type = object_type,
+            },
+        };
+    }
+};
+
+pub const Null = struct {
+    pub const object_type: ObjectType = ObjectType.null;
+
+    pub fn inspect(_: *const anyopaque, _: Allocator) !String {
+        return .{ .borrowed = "null" };
+    }
+
+    pub fn object(self: *const Null) Object {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .inspectFn = inspect,
+                .object_type = object_type,
+            },
+        };
+    }
+};

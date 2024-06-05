@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayListUnmanaged;
 const MultiArrayList = std.MultiArrayList;
 
-const Lexer = @import("Lexter.zig");
+const Lexer = @import("Lexer.zig");
 const Token = @import("token.zig").Token;
 const Ast = @import("Ast.zig");
 const Statement = Ast.Statement;
@@ -100,7 +100,7 @@ fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
 
 fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
     if (!self.peekTokenIs(expected)) {
-        // std.log.err("Expected '{}', but got '{?}'", .{ expected, self.peek_token });
+        // std.log.err("Expected '.{s}', but got '{?}'", .{ @tagName(expected), self.peek_token });
         return err;
     }
     self.advanceTokens();

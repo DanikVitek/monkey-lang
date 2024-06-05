@@ -7,8 +7,9 @@ const Writer = std.fs.File.Writer;
 const ArrayList = std.ArrayList;
 
 const Token = @import("token.zig").Token;
-const Lexer = @import("Lexter.zig");
+const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
+const evaluator = @import("eval.zig");
 
 const pretty = @import("pretty");
 
@@ -35,19 +36,10 @@ pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
         };
         defer ast.deinit(alloc);
 
-        const slice = ast.program.slice();
-
-        const opts: pretty.Options = .{
-            .max_depth = 0,
-            .slice_u8_is_str = true,
-        };
-
-        for (0..slice.len) |i| {
-            var output = try pretty.dumpList(alloc, slice.get(i), opts);
-            defer output.deinit();
-            try std.fmt.format(out, "{s}\n\n", .{output.items});
-        }
-        try std.fmt.format(out, "{}\n\n", .{ast});
+        const evaluated = try evaluator.execute(ast, alloc);
+        const str = try evaluated.inspect(alloc);
+        defer str.deinit(alloc);
+        try out.print("{s}\n\n", .{str.value()});
     }
 }
 
