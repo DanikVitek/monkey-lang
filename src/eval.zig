@@ -19,14 +19,14 @@ pub fn execute(ast: Ast, alloc: Allocator) !Object {
     return result;
 }
 
-pub fn executeStatement(stmt: Ast.Statement, alloc: Allocator) !Object {
+fn executeStatement(stmt: Ast.Statement, alloc: Allocator) !Object {
     switch (stmt) {
         .expr => |expr| return try eval(expr, alloc),
         else => @panic("Unimplemented"),
     }
 }
 
-pub fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
+fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
     switch (expr) {
         .int => |value| {
             const obj = try alloc.create(Integer);
@@ -34,8 +34,32 @@ pub fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
             return obj.object();
         },
         .bool => |value| return if (value) Object.TRUE else Object.FALSE,
+        .unary_op => |operation| {
+            const operand = try eval(operation.operand.*, alloc);
+            return try evalUnaryOp(operation.op, operand, alloc);
+        },
         else => @panic("Unimplemented"),
     }
+}
+
+fn evalUnaryOp(operator: Ast.Expression.UnaryOp, operand: Object, alloc: Allocator) !Object {
+    return switch (operator) {
+        .not => evalNotOp(operand),
+        .minus => try evalMinusOp(operand, alloc),
+    };
+}
+
+fn evalNotOp(operand: Object) Object {
+    return switch (operand.objectType()) {
+        .boolean => if (std.meta.eql(operand, Object.TRUE)) Object.FALSE else Object.TRUE,
+        else => Object.NULL, // TODO: handle properly
+    };
+}
+
+fn evalMinusOp(operand: Object, alloc: Allocator) !Object {
+    _ = operand;
+    _ = alloc;
+    @panic("Unimplemented");
 }
 
 const testing = std.testing;
@@ -108,6 +132,30 @@ fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
     };
     const int: *const Boolean = @ptrCast(@alignCast(obj.ptr));
     try testing.expectEqual(expected, int.value);
+}
+
+test "eval 'not' operator" {
+    const cases = [_]struct {
+        input: []const u8,
+        expected: bool,
+    }{
+        .{ .input = "!false;", .expected = true },
+        .{ .input = "!true;", .expected = false },
+        .{ .input = "!!false;", .expected = false },
+        .{ .input = "!!true;", .expected = true },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    inline for (cases, 0..) |case, i| {
+        const evaluated = try testEval(case.input, alloc);
+        testBooleanObject(evaluated, case.expected, alloc) catch |err| {
+            std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+            return err;
+        };
+    }
 }
 
 const Lexer = @import("Lexer.zig");
