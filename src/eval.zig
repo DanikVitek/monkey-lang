@@ -3,10 +3,12 @@ const Allocator = std.mem.Allocator;
 
 const Ast = @import("Ast.zig");
 
-const Object = @import("object.zig").Object;
-const Integer = @import("object.zig").Integer;
-const Boolean = @import("object.zig").Boolean;
-const Null = @import("object.zig").Null;
+const object = @import("object.zig");
+const Object = object.Object;
+const ObjectType = object.ObjectType;
+const Integer = object.Integer;
+const Boolean = object.Boolean;
+const Null = object.Null;
 
 pub fn execute(ast: Ast, alloc: Allocator) !Object {
     const program = ast.program.slice();
@@ -63,18 +65,51 @@ test "eval integer expression" {
     }
 }
 
-const ObjectType = @import("object.zig").ObjectType;
-
 fn testIntegerObject(obj: Object, expected: u64, alloc: Allocator) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.integer, object_type) catch |err| {
-        std.debug.print("Object is not integer. Got {s} ({s})", .{
+        std.debug.print("Object is not integer. Got .{s} ({s})", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
         return err;
     };
     const int: *const Integer = @ptrCast(@alignCast(obj.ptr));
+    try testing.expectEqual(expected, int.value);
+}
+
+test "eval bool expression" {
+    const cases = [_]struct {
+        input: []const u8,
+        expected: bool,
+    }{
+        .{ .input = "false;", .expected = false },
+        .{ .input = "true;", .expected = true },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    inline for (cases, 0..) |case, i| {
+        const evaluated = try testEval(case.input, alloc);
+        testBooleanObject(evaluated, case.expected, alloc) catch |err| {
+            std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+            return err;
+        };
+    }
+}
+
+fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
+    const object_type = obj.objectType();
+    testing.expectEqual(.boolean, object_type) catch |err| {
+        std.debug.print("Object is not boolean. Got .{s} ({s})", .{
+            @tagName(object_type),
+            (try obj.inspect(alloc)).value(),
+        });
+        return err;
+    };
+    const int: *const Boolean = @ptrCast(@alignCast(obj.ptr));
     try testing.expectEqual(expected, int.value);
 }
 

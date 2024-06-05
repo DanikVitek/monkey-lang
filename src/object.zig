@@ -30,20 +30,30 @@ pub const ObjectType = enum {
 };
 
 pub const Integer = struct {
-    sign: enum { plus, minus } = .plus,
+    sign: Sign = .plus,
     value: u64,
 
     pub const object_type: ObjectType = ObjectType.integer;
 
-    pub fn inspect(ctx: *const anyopaque, alloc: Allocator) !String {
-        const self: *const Integer = @ptrCast(@alignCast(ctx));
-        return .{ .owned = try std.fmt.allocPrint(alloc, "{s}{d}", .{
-            switch (self.sign) {
+    pub const Sign = enum(u1) {
+        plus,
+        minus,
+
+        pub fn toStr(self: Sign) []const u8 {
+            return switch (self) {
                 .plus => "",
                 .minus => "-",
-            },
-            self.value,
-        }) };
+            };
+        }
+    };
+
+    pub fn inspect(ctx: *const anyopaque, alloc: Allocator) !String {
+        const self: *const Integer = @ptrCast(@alignCast(ctx));
+        return .{ .owned = try std.fmt.allocPrint(
+            alloc,
+            "{s}{d}",
+            .{ self.sign.toStr(), self.value },
+        ) };
     }
 
     pub fn object(self: *const Integer) Object {
