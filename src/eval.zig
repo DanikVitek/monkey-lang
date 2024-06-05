@@ -33,7 +33,7 @@ pub fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
             obj.* = .{ .value = value };
             return obj.object();
         },
-        .bool => |value| return if (value) Boolean.TRUE else Boolean.FALSE,
+        .bool => |value| return if (value) Object.TRUE else Object.FALSE,
         else => @panic("Unimplemented"),
     }
 }

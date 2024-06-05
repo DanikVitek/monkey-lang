@@ -10,6 +10,10 @@ pub const Object = struct {
     ptr: *const anyopaque,
     vtable: *const VTable,
 
+    pub const NULL: Object = (&Null{}).object();
+    pub const FALSE: Object = (&Boolean{ .value = false }).object();
+    pub const TRUE: Object = (&Boolean{ .value = true }).object();
+
     const VTable = struct {
         inspectFn: *const fn (ctx: *const anyopaque, alloc: Allocator) Allocator.Error!String,
         object_type: ObjectType,
@@ -69,9 +73,6 @@ pub const Integer = struct {
 
 pub const Boolean = struct {
     value: bool,
-
-    pub const FALSE: Object = (&Boolean{ .value = false }).object();
-    pub const TRUE: Object = (&Boolean{ .value = true }).object();
 
     pub const object_type: ObjectType = ObjectType.boolean;
 
