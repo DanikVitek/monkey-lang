@@ -28,15 +28,12 @@ pub fn executeStatement(stmt: Ast.Statement, alloc: Allocator) !Object {
 
 pub fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
     switch (expr) {
-        inline .int, .bool => |value, tag| {
-            const obj = try alloc.create(comptime switch (tag) {
-                .int => Integer,
-                .bool => Boolean,
-                else => unreachable,
-            });
+        .int => |value| {
+            const obj = try alloc.create(Integer);
             obj.* = .{ .value = value };
             return obj.object();
         },
+        .bool => |value| return if (value) Boolean.TRUE else Boolean.FALSE,
         else => @panic("Unimplemented"),
     }
 }
