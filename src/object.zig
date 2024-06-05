@@ -26,6 +26,11 @@ pub const Object = struct {
     pub inline fn objectType(self: Object) ObjectType {
         return self.vtable.object_type;
     }
+
+    pub fn cast(self: Object, comptime T: type) *const T {
+        std.debug.assert(self.objectType() == T.object_type);
+        return @ptrCast(@alignCast(self.ptr));
+    }
 };
 pub const ObjectType = enum {
     null,

@@ -59,7 +59,7 @@ fn evalNotOp(operand: Object) Object {
 fn evalMinusOp(operand: Object, alloc: Allocator) !Object {
     return switch (operand.objectType()) {
         .integer => {
-            const int: *const Integer = @ptrCast(@alignCast(operand.ptr));
+            const int = operand.cast(Integer);
             const obj = try alloc.create(Integer);
             obj.* = .{ .sign = int.sign.opposite(), .value = int.value };
             return obj.object();
@@ -171,7 +171,7 @@ fn testIntegerObject(obj: Object, expected: struct { Integer.Sign, u64 }, alloc:
         });
         return err;
     };
-    const int: *const Integer = @ptrCast(@alignCast(obj.ptr));
+    const int = obj.cast(Integer);
     try testing.expectEqual(expected[0], int.sign);
     try testing.expectEqual(expected[1], int.value);
 }
@@ -185,7 +185,7 @@ fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
         });
         return err;
     };
-    const int: *const Boolean = @ptrCast(@alignCast(obj.ptr));
+    const int = obj.cast(Boolean);
     try testing.expectEqual(expected, int.value);
 }
 
