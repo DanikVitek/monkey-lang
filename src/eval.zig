@@ -30,7 +30,7 @@ fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
         .int => |value| {
             const obj = try alloc.create(Integer);
             comptime std.debug.assert(std.math.maxInt(u64) <= std.math.maxInt(i65));
-            obj.* = .{ .value = value };
+            obj.value = value;
             return obj.object();
         },
         .bool => |value| return if (value) Object.TRUE else Object.FALSE,
@@ -66,7 +66,7 @@ fn evalMinusOp(operand: Object, alloc: Allocator) !Object {
         .integer => {
             const int = operand.cast(Integer);
             const obj = try alloc.create(Integer);
-            obj.* = .{ .value = -int.value };
+            obj.value = -int.value;
             return obj.object();
         },
         else => Object.NULL, // TODO: handle properly
@@ -96,44 +96,26 @@ fn evalIntegerBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Obje
     const lhs_int = lhs.cast(Integer);
     const rhs_int = rhs.cast(Integer);
 
-    return switch (operator) {
-        .add => b: {
-            const int = try alloc.create(Integer);
-            int.* = .{ .value = lhs_int.value +% rhs_int.value };
-            break :b int.object();
+    const value = switch (operator) {
+        .add => lhs_int.value +% rhs_int.value,
+        .sub => lhs_int.value -% rhs_int.value,
+        .mul => lhs_int.value *% rhs_int.value,
+        .div => std.math.divTrunc(i65, lhs_int.value, rhs_int.value) catch {
+            return Object.NULL; // TODO: handle properly
         },
-        .sub => b: {
-            const int = try alloc.create(Integer);
-            int.* = .{ .value = lhs_int.value -% rhs_int.value };
-            break :b int.object();
+        .mod => std.math.mod(i65, lhs_int.value, rhs_int.value) catch {
+            return Object.NULL; // TODO: handle properly
         },
-        .mul => b: {
-            const int = try alloc.create(Integer);
-            int.* = .{ .value = lhs_int.value *% rhs_int.value };
-            break :b int.object();
-        },
-        .div => b: {
-            const value = std.math.divTrunc(i65, lhs_int.value, rhs_int.value) catch {
-                return Object.NULL; // TODO: handle properly
-            };
-            const int = try alloc.create(Integer);
-            int.* = .{ .value = value };
-            break :b int.object();
-        },
-        .mod => b: {
-            const value = std.math.mod(i65, lhs_int.value, rhs_int.value) catch {
-                return Object.NULL; // TODO: handle properly
-            };
-            const int = try alloc.create(Integer);
-            int.* = .{ .value = value };
-            break :b int.object();
-        },
-        .lt => if (lhs_int.value < rhs_int.value) Object.TRUE else Object.FALSE,
-        .gt => if (lhs_int.value > rhs_int.value) Object.TRUE else Object.FALSE,
-        .leq => if (lhs_int.value <= rhs_int.value) Object.TRUE else Object.FALSE,
-        .geq => if (lhs_int.value >= rhs_int.value) Object.TRUE else Object.FALSE,
+        .lt => return if (lhs_int.value < rhs_int.value) Object.TRUE else Object.FALSE,
+        .gt => return if (lhs_int.value > rhs_int.value) Object.TRUE else Object.FALSE,
+        .leq => return if (lhs_int.value <= rhs_int.value) Object.TRUE else Object.FALSE,
+        .geq => return if (lhs_int.value >= rhs_int.value) Object.TRUE else Object.FALSE,
         else => unreachable,
     };
+
+    const int = try alloc.create(Integer);
+    int.value = value;
+    return int.object();
 }
 
 fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !Object {
