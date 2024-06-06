@@ -30,10 +30,11 @@ fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
         .int => |value| {
             const obj = try alloc.create(Integer);
             comptime std.debug.assert(std.math.maxInt(u64) <= std.math.maxInt(i65));
+            comptime std.debug.assert(std.math.maxInt(u64) <= -@as(comptime_int, std.math.minInt(i65)));
             obj.value = value;
             return obj.object();
         },
-        .bool => |value| return if (value) Object.TRUE else Object.FALSE,
+        .bool => |value| return nativeBoolToBooleanObject(value),
         .unary_op => |operation| {
             const operand = try eval(operation.operand.*, alloc);
             return try evalUnaryOp(operation.op, operand, alloc);
@@ -56,7 +57,7 @@ fn evalUnaryOp(operator: Ast.Expression.UnaryOp, operand: Object, alloc: Allocat
 
 fn evalNotOp(operand: Object) Object {
     return switch (operand.objectType()) {
-        .boolean => if (std.meta.eql(operand, Object.TRUE)) Object.FALSE else Object.TRUE,
+        .boolean => nativeBoolToBooleanObject(!operand.eql(Object.TRUE)),
         else => Object.NULL, // TODO: handle properly
     };
 }
@@ -106,10 +107,10 @@ fn evalIntegerBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Obje
         .mod => std.math.mod(i65, lhs_int.value, rhs_int.value) catch {
             return Object.NULL; // TODO: handle properly
         },
-        .lt => return if (lhs_int.value < rhs_int.value) Object.TRUE else Object.FALSE,
-        .gt => return if (lhs_int.value > rhs_int.value) Object.TRUE else Object.FALSE,
-        .leq => return if (lhs_int.value <= rhs_int.value) Object.TRUE else Object.FALSE,
-        .geq => return if (lhs_int.value >= rhs_int.value) Object.TRUE else Object.FALSE,
+        .lt => return nativeBoolToBooleanObject(lhs_int.value < rhs_int.value),
+        .gt => return nativeBoolToBooleanObject(lhs_int.value > rhs_int.value),
+        .leq => return nativeBoolToBooleanObject(lhs_int.value <= rhs_int.value),
+        .geq => return nativeBoolToBooleanObject(lhs_int.value >= rhs_int.value),
         else => unreachable,
     };
 
@@ -119,11 +120,16 @@ fn evalIntegerBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Obje
 }
 
 fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !Object {
-    return switch (operator) {
-        .eq => if (lhs.eql(rhs)) Object.TRUE else Object.FALSE,
-        .neq => if (!lhs.eql(rhs)) Object.TRUE else Object.FALSE,
+    const result: bool = switch (operator) {
+        .eq => lhs.eql(rhs),
+        .neq => !lhs.eql(rhs),
         else => unreachable,
     };
+    return nativeBoolToBooleanObject(result);
+}
+
+inline fn nativeBoolToBooleanObject(value: bool) Object {
+    return if (value) Object.TRUE else Object.FALSE;
 }
 
 const testing = std.testing;
