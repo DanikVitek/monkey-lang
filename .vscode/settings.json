@@ -3,6 +3,7 @@
         "cond",
         "lparen",
         "rparen",
+        "Trunc",
         "usingnamespace"
     ]
 }

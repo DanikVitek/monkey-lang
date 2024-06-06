@@ -8,7 +8,7 @@ const Token = @import("token.zig").Token;
 const Ast = @import("Ast.zig");
 const Statement = Ast.Statement;
 const Expression = Ast.Expression;
-const BinOp = Expression.BinOp;
+const BinaryOp = Expression.BinaryOp;
 const UnaryOp = Expression.UnaryOp;
 const IfExpr = Expression.IfExpr;
 const BlockExpr = Expression.BlockExpr;
@@ -219,11 +219,11 @@ const PrattParser = struct {
     }
 
     fn isInfix(tok: Token) bool {
-        return tok == .lparen or BinOp.fromToken(tok) != null;
+        return tok == .lparen or BinaryOp.fromToken(tok) != null;
     }
 
     fn parseInfixExpr(p: *Parser, left: Expression, alloc: Allocator) !Expression {
-        const op = BinOp.fromToken(p.curr_token.?).?;
+        const op = BinaryOp.fromToken(p.curr_token.?).?;
 
         const precedence = currPrecedence(p);
         p.advanceTokens();
@@ -235,7 +235,7 @@ const PrattParser = struct {
         const boxed_left = try alloc.create(Expression);
         boxed_left.* = left;
 
-        return Expression{ .bin_op = .{
+        return Expression{ .binary_op = .{
             .left = boxed_left,
             .op = op,
             .right = right,
@@ -643,7 +643,7 @@ test "infix expression" {
     const cases = comptime [_]struct {
         input: []const u8,
         left: Expression,
-        op: BinOp,
+        op: BinaryOp,
         right: Expression,
     }{ .{
         .input = "5 + 6;",
@@ -709,7 +709,7 @@ test "infix expression" {
 
         const stmt = program.get(0);
         try testing.expectEqualDeep(
-            Statement{ .expr = .{ .bin_op = .{
+            Statement{ .expr = .{ .binary_op = .{
                 .left = &case.left,
                 .op = case.op,
                 .right = &case.right,
@@ -819,9 +819,9 @@ test "if expression" {
     const expr = program.get(0).expr.@"if";
 
     try testing.expectEqualDeep(
-        Expression{ .bin_op = .{
+        Expression{ .binary_op = .{
             .left = &Expression{ .ident = "x" },
-            .op = BinOp.lt,
+            .op = BinaryOp.lt,
             .right = &Expression{ .ident = "y" },
         } },
         expr.cond.*,
@@ -854,9 +854,9 @@ test "if/else expression" {
     const expr = program.get(0).expr.@"if";
 
     try testing.expectEqualDeep(
-        Expression{ .bin_op = .{
+        Expression{ .binary_op = .{
             .left = &Expression{ .ident = "x" },
-            .op = BinOp.lt,
+            .op = BinaryOp.lt,
             .right = &Expression{ .ident = "y" },
         } },
         expr.cond.*,
@@ -897,9 +897,9 @@ test "fn parsing" {
     try testing.expectEqual(@as(usize, 1), expr.body.program.len);
     try testing.expectEqualDeep(Statement{ .expr = .unit }, expr.body.program.get(0));
     try testing.expectEqualDeep(
-        &Expression{ .bin_op = .{
+        &Expression{ .binary_op = .{
             .left = &Expression{ .ident = "x" },
-            .op = BinOp.add,
+            .op = BinaryOp.add,
             .right = &Expression{ .ident = "y" },
         } },
         expr.body.@"return",
@@ -953,14 +953,14 @@ test "call expression parsing" {
     try testing.expectEqual(@as(usize, 3), expr.args.len);
 
     try testing.expectEqualDeep(Expression{ .int = 1 }, expr.args.get(0));
-    try testing.expectEqualDeep(Expression{ .bin_op = .{
+    try testing.expectEqualDeep(Expression{ .binary_op = .{
         .left = &Expression{ .int = 2 },
-        .op = BinOp.mul,
+        .op = BinaryOp.mul,
         .right = &Expression{ .int = 3 },
     } }, expr.args.get(1));
-    try testing.expectEqualDeep(Expression{ .bin_op = .{
+    try testing.expectEqualDeep(Expression{ .binary_op = .{
         .left = &Expression{ .int = 4 },
-        .op = BinOp.add,
+        .op = BinaryOp.add,
         .right = &Expression{ .int = 5 },
     } }, expr.args.get(2));
 }

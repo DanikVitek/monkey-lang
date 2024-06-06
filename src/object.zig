@@ -16,6 +16,7 @@ pub const Object = struct {
 
     const VTable = struct {
         inspectFn: *const fn (ctx: *const anyopaque, alloc: Allocator) Allocator.Error!String,
+        eqlFn: *const fn (lhs: *const anyopaque, rhs: *const anyopaque) bool,
         object_type: ObjectType,
     };
 
@@ -25,6 +26,10 @@ pub const Object = struct {
 
     pub inline fn objectType(self: Object) ObjectType {
         return self.vtable.object_type;
+    }
+
+    pub inline fn eql(self: Object, other: Object) bool {
+        return self.objectType() == other.objectType() and self.vtable.eqlFn(self.ptr, other.ptr);
     }
 
     pub fn cast(self: Object, comptime T: type) *const T {
@@ -39,37 +44,19 @@ pub const ObjectType = enum {
 };
 
 pub const Integer = struct {
-    sign: Sign = .plus,
-    value: u64,
+    value: i65,
 
     pub const object_type: ObjectType = ObjectType.integer;
 
-    pub const Sign = enum(u1) {
-        plus,
-        minus,
-
-        pub fn toStr(self: Sign) []const u8 {
-            return switch (self) {
-                .plus => "",
-                .minus => "-",
-            };
-        }
-
-        pub fn opposite(self: Sign) Sign {
-            return switch (self) {
-                .plus => .minus,
-                .minus => .plus,
-            };
-        }
-    };
-
     pub fn inspect(ctx: *const anyopaque, alloc: Allocator) !String {
         const self: *const Integer = @ptrCast(@alignCast(ctx));
-        return .{ .owned = try std.fmt.allocPrint(
-            alloc,
-            "{s}{d}",
-            .{ self.sign.toStr(), self.value },
-        ) };
+        return .{ .owned = try std.fmt.allocPrint(alloc, "{d}", .{self.value}) };
+    }
+
+    pub fn eql(lhs: *const anyopaque, rhs: *const anyopaque) bool {
+        const lhs_int: *const Integer = @ptrCast(@alignCast(lhs));
+        const rhs_int: *const Integer = @ptrCast(@alignCast(rhs));
+        return lhs_int.value == rhs_int.value;
     }
 
     pub fn object(self: *const Integer) Object {
@@ -77,6 +64,7 @@ pub const Integer = struct {
             .ptr = self,
             .vtable = &.{
                 .inspectFn = inspect,
+                .eqlFn = eql,
                 .object_type = object_type,
             },
         };
@@ -93,11 +81,18 @@ pub const Boolean = struct {
         return .{ .borrowed = if (self.value) "true" else "false" };
     }
 
+    pub fn eql(lhs: *const anyopaque, rhs: *const anyopaque) bool {
+        const lhs_bool: *const Boolean = @ptrCast(@alignCast(lhs));
+        const rhs_bool: *const Boolean = @ptrCast(@alignCast(rhs));
+        return lhs_bool.value == rhs_bool.value;
+    }
+
     pub fn object(self: *const Boolean) Object {
         return .{
             .ptr = self,
             .vtable = &.{
                 .inspectFn = inspect,
+                .eqlFn = eql,
                 .object_type = object_type,
             },
         };
@@ -111,11 +106,16 @@ pub const Null = struct {
         return .{ .borrowed = "null" };
     }
 
+    pub fn eql(_: *const anyopaque, _: *const anyopaque) bool {
+        return true;
+    }
+
     pub fn object(self: *const Null) Object {
         return .{
             .ptr = self,
             .vtable = &.{
                 .inspectFn = inspect,
+                .eqlFn = eql,
                 .object_type = object_type,
             },
         };

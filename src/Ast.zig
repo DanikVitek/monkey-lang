@@ -69,7 +69,7 @@ pub const Expression = union(enum) {
     int: u64,
     bool: bool,
     unary_op: UnaryOpExpr,
-    bin_op: BinOpExpr,
+    binary_op: BinaryOpExpr,
     @"if": IfExpr,
     block: BlockExpr,
     func: FnExpr,
@@ -80,9 +80,9 @@ pub const Expression = union(enum) {
         operand: *const Expression,
     };
 
-    pub const BinOpExpr = struct {
+    pub const BinaryOpExpr = struct {
         left: *const Expression,
-        op: BinOp,
+        op: BinaryOp,
         right: *const Expression,
     };
 
@@ -222,7 +222,7 @@ pub const Expression = union(enum) {
         }
     };
 
-    pub const BinOp = enum {
+    pub const BinaryOp = enum {
         add,
         sub,
         mul,
@@ -235,7 +235,7 @@ pub const Expression = union(enum) {
         leq,
         geq,
 
-        pub fn fromToken(tok: Token) ?BinOp {
+        pub fn fromToken(tok: Token) ?BinaryOp {
             return switch (tok) {
                 .plus => .add,
                 .minus => .sub,
@@ -252,7 +252,7 @@ pub const Expression = union(enum) {
             };
         }
 
-        fn toToken(op: BinOp) Token {
+        fn toToken(op: BinaryOp) Token {
             return switch (op) {
                 .add => .plus,
                 .sub => .minus,
@@ -268,7 +268,7 @@ pub const Expression = union(enum) {
             };
         }
 
-        pub fn format(value: BinOp, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        pub fn format(value: BinaryOp, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
             _ = fmt;
             _ = options;
             return std.fmt.format(writer, "{s}", .{value.toToken()});
@@ -277,7 +277,7 @@ pub const Expression = union(enum) {
 
     pub fn deinit(self: Expression, alloc: Allocator) void {
         switch (self) {
-            .bin_op => |expr| {
+            .binary_op => |expr| {
                 expr.left.deinit(alloc);
                 alloc.destroy(expr.left);
 
@@ -312,7 +312,7 @@ pub const Expression = union(enum) {
             .int => |val| std.fmt.format(writer, "{d}", .{val}),
             .bool => |val| std.fmt.format(writer, "{}", .{val}),
             .unary_op => |expr| std.fmt.format(writer, "({}{})", .{ expr.op, expr.operand }),
-            .bin_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
+            .binary_op => |expr| std.fmt.format(writer, "({} {} {})", .{ expr.left, expr.op, expr.right }),
             inline else => |expr| std.fmt.format(writer, "{}", .{expr}),
         };
     }
