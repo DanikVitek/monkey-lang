@@ -176,6 +176,18 @@ test "eval bool expression" {
         .{ .input = "!true;", .expected = false },
         .{ .input = "!!false;", .expected = false },
         .{ .input = "!!true;", .expected = true },
+        .{ .input = "1 < 2;", .expected = true },
+        .{ .input = "1 > 2;", .expected = false },
+        .{ .input = "1 < 1;", .expected = false },
+        .{ .input = "1 > 1;", .expected = false },
+        .{ .input = "1 <= 1;", .expected = true },
+        .{ .input = "1 >= 1;", .expected = true },
+        .{ .input = "1 <= 2;", .expected = true },
+        .{ .input = "1 >= 2;", .expected = false },
+        .{ .input = "1 == 1;", .expected = true },
+        .{ .input = "1 != 1;", .expected = false },
+        .{ .input = "1 == 2;", .expected = false },
+        .{ .input = "1 != 2;", .expected = true },
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
