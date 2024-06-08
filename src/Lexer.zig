@@ -35,7 +35,6 @@ pub fn nextToken(self: *Lexer) ?Token {
 
     return switch (self.readChar() orelse return null) {
         '+' => .plus,
-        '-' => .minus,
         '*' => .star,
         '/' => .slash,
         '%' => .percent,
@@ -61,6 +60,12 @@ pub fn nextToken(self: *Lexer) ?Token {
             _ = self.readChar();
             break :blk .geq;
         } else .gt,
+        '-' => if (isDigit(self.peekChar())) blk: {
+            const start = self.position;
+            const end = self.endOfInt();
+            const literal = self.utf8.bytes[start..end];
+            break :blk .{ .int = literal };
+        } else .minus,
         else => |ch| if (isIdentStart(ch)) blk: {
             const start = self.position;
             const end = self.endOfIdentifier();
@@ -277,8 +282,7 @@ test "next token" {
         .rparen,
         .semicolon,
         .bang,
-        .minus,
-        .{ .int = "5" },
+        .{ .int = "-5" },
         .lt,
         .{ .int = "10" },
         .gt,

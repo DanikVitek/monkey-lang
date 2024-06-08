@@ -66,7 +66,7 @@ pub const Statement = union(enum) {
 pub const Expression = union(enum) {
     unit: void,
     ident: []const u8,
-    int: u64,
+    int: i63,
     bool: bool,
     unary_op: UnaryOpExpr,
     binary_op: BinaryOpExpr,

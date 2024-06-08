@@ -204,7 +204,7 @@ const PrattParser = struct {
     }
 
     inline fn parseInt(p: *const Parser) !Expression {
-        return Expression{ .int = try std.fmt.parseInt(u64, p.curr_token.?.int, 10) };
+        return Expression{ .int = try std.fmt.parseInt(i63, p.curr_token.?.int, 10) };
     }
 
     fn parsePrefixExpr(p: *Parser, alloc: Allocator) !Expression {
@@ -611,7 +611,7 @@ test "prefix expression" {
         .op = .not,
         .operand = .{ .int = 5 },
     }, .{
-        .input = "-15;",
+        .input = "-(15);",
         .op = .minus,
         .operand = .{ .int = 15 },
     } };
@@ -746,7 +746,7 @@ test "operator precedence parsing" {
         "(((a + (b * c)) + (d / e)) - f);",
     }, .{
         "3 + 4; -5 * 5;",
-        "(3 + 4);\n((-5) * 5);",
+        "(3 + 4);\n(-5 * 5);",
     }, .{
         "5 > 4 == 3 < 4;",
         "((5 > 4) == (3 < 4));",

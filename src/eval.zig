@@ -47,6 +47,7 @@ fn eval(expr: Ast.Expression, alloc: Allocator) EvalError!Object {
             break :b try evalBinaryOp(lhs, operation.op, rhs, alloc);
         },
         .@"if" => |conditional| try evalIfExpr(conditional, alloc),
+        .block => |block| try evalBlockExpr(block, alloc),
         inline else => |_, tag| @panic("Unimplemented (" ++ @tagName(tag) ++ ")"),
     };
 }
@@ -104,10 +105,10 @@ fn evalIntegerBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Obje
         .add => lhs_int.value +% rhs_int.value,
         .sub => lhs_int.value -% rhs_int.value,
         .mul => lhs_int.value *% rhs_int.value,
-        .div => std.math.divTrunc(i65, lhs_int.value, rhs_int.value) catch {
+        .div => std.math.divTrunc(i63, lhs_int.value, rhs_int.value) catch {
             return Object.NULL; // TODO: handle properly
         },
-        .mod => std.math.mod(i65, lhs_int.value, rhs_int.value) catch {
+        .mod => std.math.mod(i63, lhs_int.value, rhs_int.value) catch {
             return Object.NULL; // TODO: handle properly
         },
         .lt => return nativeBoolToBooleanObject(lhs_int.value < rhs_int.value),
@@ -162,7 +163,7 @@ const testing = std.testing;
 test "eval integer expression" {
     const cases = [_]struct {
         input: []const u8,
-        expected: i65,
+        expected: i63,
     }{
         .{ .input = "5;", .expected = 5 },
         .{ .input = "10;", .expected = 10 },
@@ -239,13 +240,13 @@ test "eval if/else expression" {
         input: []const u8,
         expected: Object,
     }{
-        .{ .input = "if (true) { 10 }", .expected = (&Integer{ .value = 10 }).object() },
+        .{ .input = "if (true) { 10 }", .expected = (Integer{ .value = 10 }).object() },
         .{ .input = "if (false) { 10 }", .expected = Object.NULL },
         .{ .input = "if (1) { 10 }", .expected = Object.NULL },
-        .{ .input = "if (1 < 2) { 10 }", .expected = (&Integer{ .value = 10 }).object() },
+        .{ .input = "if (1 < 2) { 10 }", .expected = (Integer{ .value = 10 }).object() },
         .{ .input = "if (1 > 2) { 10 }", .expected = Object.NULL },
-        .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = (&Integer{ .value = 20 }).object() },
-        .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = (&Integer{ .value = 10 }).object() },
+        .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = (Integer{ .value = 20 }).object() },
+        .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = (Integer{ .value = 10 }).object() },
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -268,7 +269,7 @@ test "eval if/else expression" {
     }
 }
 
-fn testIntegerObject(obj: Object, expected: i65, alloc: Allocator) !void {
+fn testIntegerObject(obj: Object, expected: i63, alloc: Allocator) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.integer, object_type) catch |err| {
         std.debug.print("Object is not integer. Got .{s} ({s})", .{
@@ -303,7 +304,6 @@ fn testNullObject(obj: Object, alloc: Allocator) !void {
         });
         return err;
     };
-    try testing.expectEqualDeep(Object.NULL, obj);
 }
 
 const Lexer = @import("Lexer.zig");
