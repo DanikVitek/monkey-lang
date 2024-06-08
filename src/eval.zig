@@ -25,27 +25,30 @@ fn executeStatement(stmt: Ast.Statement, alloc: Allocator) !Object {
     }
 }
 
-fn eval(expr: Ast.Expression, alloc: Allocator) !Object {
-    switch (expr) {
-        .int => |value| {
+const EvalError = error{} || Allocator.Error;
+
+fn eval(expr: Ast.Expression, alloc: Allocator) EvalError!Object {
+    return switch (expr) {
+        .int => |value| b: {
             const obj = try alloc.create(Integer);
             comptime std.debug.assert(std.math.maxInt(u64) <= std.math.maxInt(i65));
             comptime std.debug.assert(std.math.maxInt(u64) <= -@as(comptime_int, std.math.minInt(i65)));
             obj.value = value;
-            return obj.object();
+            break :b obj.object();
         },
         .bool => |value| return nativeBoolToBooleanObject(value),
-        .unary_op => |operation| {
+        .unary_op => |operation| b: {
             const operand = try eval(operation.operand.*, alloc);
-            return try evalUnaryOp(operation.op, operand, alloc);
+            break :b try evalUnaryOp(operation.op, operand, alloc);
         },
-        .binary_op => |operation| {
+        .binary_op => |operation| b: {
             const lhs = try eval(operation.left.*, alloc);
             const rhs = try eval(operation.right.*, alloc);
-            return try evalBinaryOp(lhs, operation.op, rhs, alloc);
+            break :b try evalBinaryOp(lhs, operation.op, rhs, alloc);
         },
-        else => @panic("Unimplemented"),
-    }
+        .@"if" => |conditional| try evalIfExpr(conditional, alloc),
+        inline else => |_, tag| @panic("Unimplemented (" ++ @tagName(tag) ++ ")"),
+    };
 }
 
 fn evalUnaryOp(operator: Ast.Expression.UnaryOp, operand: Object, alloc: Allocator) !Object {
@@ -126,6 +129,28 @@ fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !
         else => unreachable,
     };
     return nativeBoolToBooleanObject(result);
+}
+
+fn evalIfExpr(conditional: Ast.Expression.IfExpr, alloc: Allocator) !Object {
+    const cond_obj = try eval(conditional.cond.*, alloc);
+    if (cond_obj.objectType() != .boolean) {
+        return Object.NULL; // TODO: handle properly
+    }
+    const cond_bool = cond_obj.cast(Boolean);
+    return if (cond_bool.value)
+        try evalBlockExpr(conditional.conseq, alloc)
+    else if (conditional.alt) |alt|
+        try evalBlockExpr(alt, alloc)
+    else
+        Object.NULL;
+}
+
+fn evalBlockExpr(block: Ast.Expression.BlockExpr, alloc: Allocator) !Object {
+    const program = block.program.slice();
+    for (0..program.len) |i| {
+        _ = try executeStatement(program.get(i), alloc);
+    }
+    return try eval((block.@"return" orelse return Object.NULL).*, alloc);
 }
 
 inline fn nativeBoolToBooleanObject(value: bool) Object {
@@ -209,6 +234,40 @@ test "eval bool expression" {
     }
 }
 
+test "eval if/else expression" {
+    const cases = comptime [_]struct {
+        input: []const u8,
+        expected: Object,
+    }{
+        .{ .input = "if (true) { 10 }", .expected = (&Integer{ .value = 10 }).object() },
+        .{ .input = "if (false) { 10 }", .expected = Object.NULL },
+        .{ .input = "if (1) { 10 }", .expected = Object.NULL },
+        .{ .input = "if (1 < 2) { 10 }", .expected = (&Integer{ .value = 10 }).object() },
+        .{ .input = "if (1 > 2) { 10 }", .expected = Object.NULL },
+        .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = (&Integer{ .value = 20 }).object() },
+        .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = (&Integer{ .value = 10 }).object() },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    inline for (cases, 0..) |case, i| {
+        const evaluated = try testEval(case.input, alloc);
+        if (comptime (case.expected.objectType() == .integer)) {
+            testIntegerObject(evaluated, case.expected.cast(Integer).value, alloc) catch |err| {
+                std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+                return err;
+            };
+        } else {
+            testNullObject(evaluated, alloc) catch |err| {
+                std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+                return err;
+            };
+        }
+    }
+}
+
 fn testIntegerObject(obj: Object, expected: i65, alloc: Allocator) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.integer, object_type) catch |err| {
@@ -233,6 +292,18 @@ fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
     };
     const int = obj.cast(Boolean);
     try testing.expectEqual(expected, int.value);
+}
+
+fn testNullObject(obj: Object, alloc: Allocator) !void {
+    const object_type = obj.objectType();
+    testing.expectEqual(.null, object_type) catch |err| {
+        std.debug.print("Object is not null. Got .{s} ({s})", .{
+            @tagName(object_type),
+            (try obj.inspect(alloc)).value(),
+        });
+        return err;
+    };
+    try testing.expectEqualDeep(Object.NULL, obj);
 }
 
 const Lexer = @import("Lexer.zig");
