@@ -297,6 +297,17 @@ test "eval return statement" {
         .{ .input = "return 10; 9;", .expected = 10 },
         .{ .input = "return 2 * 5; 9;", .expected = 10 },
         .{ .input = "8; return 2 * 5; 9;", .expected = 10 },
+        .{
+            .input =
+            \\if (10 > 1) {
+            \\    if (10 > 1) {
+            \\        return 10;
+            \\    }
+            \\    return 1;
+            \\}
+            ,
+            .expected = 10,
+        },
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
