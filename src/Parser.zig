@@ -65,7 +65,7 @@ fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
     try self.expectPeekAdvance(.assign, error.ExpectedAssign);
 
     self.advanceTokens();
-    const value = try PrattParser.parseExpr(self, .lowest, alloc);
+    const value = try PrattParser.parseExpr(alloc, self, .lowest);
     errdefer value.deinit(alloc);
 
     try self.expectPeekAdvance(.semicolon, error.ExpectedSemicolon);
@@ -78,7 +78,7 @@ fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
 
     const expr: ?Expression = if (!self.peekTokenIs(.semicolon)) b: {
         self.advanceTokens();
-        break :b try PrattParser.parseExpr(self, .lowest, alloc);
+        break :b try PrattParser.parseExpr(alloc, self, .lowest);
     } else null;
     errdefer if (expr) |e| e.deinit(alloc);
 
@@ -88,7 +88,7 @@ fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
 }
 
 fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
-    const expr = try PrattParser.parseExpr(self, .lowest, alloc);
+    const expr = try PrattParser.parseExpr(alloc, self, .lowest);
     errdefer expr.deinit(alloc);
 
     if (!self.currTokenIs(.rbrace)) {
@@ -151,8 +151,8 @@ const PrattParser = struct {
         ExpectedSemicolon,
     } || std.fmt.ParseIntError || Allocator.Error;
 
-    pub fn parseExpr(p: *Parser, precedence: Precedence, alloc: Allocator) ParseExprError!Expression {
-        var left_expr = try prefix(p, alloc);
+    pub fn parseExpr(alloc: Allocator, p: *Parser, precedence: Precedence) ParseExprError!Expression {
+        var left_expr = try prefix(alloc, p);
         errdefer left_expr.deinit(alloc);
 
         while (!p.peekTokenIs(.semicolon) and @intFromEnum(precedence) < @intFromEnum(peekPrecedence(p))) {
@@ -161,31 +161,31 @@ const PrattParser = struct {
             p.advanceTokens();
 
             left_expr = switch (p.curr_token.?) {
-                .lparen => try parseCallExpr(p, left_expr, alloc),
-                else => try parseInfixExpr(p, left_expr, alloc),
+                .lparen => try parseCallExpr(alloc, p, left_expr),
+                else => try parseInfixExpr(alloc, p, left_expr),
             };
         }
 
         return left_expr;
     }
 
-    fn prefix(p: *Parser, alloc: Allocator) !Expression {
+    fn prefix(alloc: Allocator, p: *Parser) !Expression {
         const curr_tok = p.curr_token orelse return error.UnexpectedEof;
         return switch (curr_tok) {
             .false, .true => parseBool(p),
             .ident => parseIdent(p),
             .int => parseInt(p),
-            .bang, .minus => parsePrefixExpr(p, alloc),
-            .lparen => parseGroupExpr(p, alloc),
+            .bang, .minus => parsePrefixExpr(alloc, p),
+            .lparen => parseGroupExpr(alloc, p),
             .lbrace => b: {
                 if (p.peekTokenIs(.rbrace)) {
                     p.advanceTokens();
                     break :b Expression.unit;
                 }
-                break :b .{ .block = try parseBlockExpr(p, alloc) };
+                break :b .{ .block = try parseBlockExpr(alloc, p) };
             },
-            .@"if" => parseIfExpr(p, alloc),
-            .func => parseFuncExpr(p, alloc),
+            .@"if" => parseIfExpr(alloc, p),
+            .func => parseFuncExpr(alloc, p),
             else => b: {
                 std.log.err("No prefix parse function for '{s}'", .{curr_tok});
                 break :b error.UnexpectedToken;
@@ -209,13 +209,13 @@ const PrattParser = struct {
         return Expression{ .int = try std.fmt.parseInt(i63, p.curr_token.?.int, 10) };
     }
 
-    fn parsePrefixExpr(p: *Parser, alloc: Allocator) !Expression {
+    fn parsePrefixExpr(alloc: Allocator, p: *Parser) !Expression {
         const op = UnaryOp.fromToken(p.curr_token.?).?;
         p.advanceTokens();
 
         const right = try alloc.create(Expression);
         errdefer alloc.destroy(right);
-        right.* = try parseExpr(p, .prefix, alloc);
+        right.* = try parseExpr(alloc, p, .prefix);
 
         return Expression{ .unary_op = .{ .op = op, .operand = right } };
     }
@@ -224,7 +224,7 @@ const PrattParser = struct {
         return tok == .lparen or BinaryOp.fromToken(tok) != null;
     }
 
-    fn parseInfixExpr(p: *Parser, left: Expression, alloc: Allocator) !Expression {
+    fn parseInfixExpr(alloc: Allocator, p: *Parser, left: Expression) !Expression {
         const op = BinaryOp.fromToken(p.curr_token.?).?;
 
         const precedence = currPrecedence(p);
@@ -232,7 +232,7 @@ const PrattParser = struct {
 
         const right = try alloc.create(Expression);
         errdefer alloc.destroy(right);
-        right.* = try parseExpr(p, precedence, alloc);
+        right.* = try parseExpr(alloc, p, precedence);
 
         const boxed_left = try alloc.create(Expression);
         boxed_left.* = left;
@@ -252,7 +252,7 @@ const PrattParser = struct {
         return Precedence.fromInfixToken(p.peek_token orelse return .lowest) orelse .lowest;
     }
 
-    fn parseGroupExpr(p: *Parser, alloc: Allocator) !Expression {
+    fn parseGroupExpr(alloc: Allocator, p: *Parser) !Expression {
         std.debug.assert(p.curr_token.? == .lparen);
         p.advanceTokens();
 
@@ -260,7 +260,7 @@ const PrattParser = struct {
             return Expression.unit;
         }
 
-        const expr = try parseExpr(p, .lowest, alloc);
+        const expr = try parseExpr(alloc, p, .lowest);
         errdefer expr.deinit(alloc);
 
         try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
@@ -268,19 +268,19 @@ const PrattParser = struct {
         return expr;
     }
 
-    fn parseIfExpr(p: *Parser, alloc: Allocator) !Expression {
+    fn parseIfExpr(alloc: Allocator, p: *Parser) !Expression {
         std.debug.assert(p.curr_token.? == .@"if");
 
         try p.expectPeekAdvance(.lparen, error.ExpectedLParen);
 
         p.advanceTokens();
-        const cond = try parseExpr(p, .lowest, alloc);
+        const cond = try parseExpr(alloc, p, .lowest);
         errdefer cond.deinit(alloc);
 
         try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
         try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
-        const conseq = try parseBlockExpr(p, alloc);
+        const conseq = try parseBlockExpr(alloc, p);
         errdefer conseq.deinit(alloc);
 
         const alt: ?BlockExpr = if (p.peekTokenIs(.@"else")) b: {
@@ -288,7 +288,7 @@ const PrattParser = struct {
 
             try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
-            break :b try parseBlockExpr(p, alloc);
+            break :b try parseBlockExpr(alloc, p);
         } else null;
 
         const boxed_cond = try alloc.create(Expression);
@@ -301,7 +301,7 @@ const PrattParser = struct {
         } };
     }
 
-    fn parseBlockExpr(p: *Parser, alloc: Allocator) !BlockExpr {
+    fn parseBlockExpr(alloc: Allocator, p: *Parser) !BlockExpr {
         std.debug.assert(p.curr_token.? == .lbrace);
 
         var program: MultiArrayList(Statement) = .{};
@@ -333,7 +333,7 @@ const PrattParser = struct {
             prev_parser.lexer.* = prev_lexer;
             p.* = prev_parser;
 
-            const expr = try parseExpr(p, .lowest, alloc);
+            const expr = try parseExpr(alloc, p, .lowest);
             try program.append(alloc, .{ .expr = expr });
 
             try p.expectPeekAdvance(.rbrace, error.ExpectedRBrace);
@@ -344,22 +344,22 @@ const PrattParser = struct {
         return BlockExpr{ .program = program };
     }
 
-    fn parseFuncExpr(p: *Parser, alloc: Allocator) !Expression {
+    fn parseFuncExpr(alloc: Allocator, p: *Parser) !Expression {
         std.debug.assert(p.currTokenIs(.func));
 
         try p.expectPeekAdvance(.lparen, error.ExpectedLParen);
 
-        var params = try parseFuncParams(p, alloc);
+        var params = try parseFuncParams(alloc, p);
         errdefer params.deinit(alloc);
 
         try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
-        const body = try parseBlockExpr(p, alloc);
+        const body = try parseBlockExpr(alloc, p);
 
         return Expression{ .func = .{ .params = params, .body = body } };
     }
 
-    fn parseFuncParams(p: *Parser, alloc: Allocator) !ArrayList([]const u8) {
+    fn parseFuncParams(alloc: Allocator, p: *Parser) !ArrayList([]const u8) {
         var params = ArrayList([]const u8){};
         errdefer params.deinit(alloc);
 
@@ -389,8 +389,8 @@ const PrattParser = struct {
         return params;
     }
 
-    fn parseCallExpr(p: *Parser, callee: Expression, alloc: Allocator) !Expression {
-        var args = try parseCallArgs(p, alloc);
+    fn parseCallExpr(alloc: Allocator, p: *Parser, callee: Expression) !Expression {
+        var args = try parseCallArgs(alloc, p);
         errdefer {
             const slice = args.slice();
             for (0..slice.len) |i| {
@@ -404,7 +404,7 @@ const PrattParser = struct {
         return Expression{ .call = .{ .callee = boxed_callee, .args = args } };
     }
 
-    fn parseCallArgs(p: *Parser, alloc: Allocator) !MultiArrayList(Expression) {
+    fn parseCallArgs(alloc: Allocator, p: *Parser) !MultiArrayList(Expression) {
         var args: MultiArrayList(Expression) = .{};
         errdefer {
             const slice = args.slice();
@@ -420,7 +420,7 @@ const PrattParser = struct {
         }
 
         p.advanceTokens();
-        try args.append(alloc, try parseExpr(p, .lowest, alloc));
+        try args.append(alloc, try parseExpr(alloc, p, .lowest));
 
         while (p.peekTokenIs(.comma)) {
             p.advanceTokens();
@@ -428,7 +428,7 @@ const PrattParser = struct {
             if (p.currTokenIs(.rparen)) {
                 return args;
             }
-            try args.append(alloc, try parseExpr(p, .lowest, alloc));
+            try args.append(alloc, try parseExpr(alloc, p, .lowest));
         }
 
         try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
