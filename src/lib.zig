@@ -22,3 +22,5 @@ pub fn MaybeOwnedSlice(comptime T: type, comptime sentinel: ?T) type {
         }
     };
 }
+
+pub const String = MaybeOwnedSlice(u8, null);

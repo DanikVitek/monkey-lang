@@ -2,9 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const trait = @import("lib.zig").trait;
-const MaybeOwnedSlice = @import("lib.zig").MaybeOwnedSlice;
-
-const String = MaybeOwnedSlice(u8, null);
+const String = @import("lib.zig").String;
 
 pub const Object = struct {
     inner: ObjectInner,
@@ -32,6 +30,10 @@ pub const Object = struct {
         return self.objectType() == other.objectType() and self.vtable.eqlFn(self.inner, other.inner);
     }
 
+    pub fn isError(self: Object) bool {
+        return self.objectType() == ObjectType.eval_error;
+    }
+
     pub fn cast(self: Object, comptime T: type) CastType(T) {
         std.debug.assert(self.objectType() == T.object_type);
         return if (T == Integer)
@@ -39,7 +41,7 @@ pub const Object = struct {
         else if (T == Boolean)
             Boolean{ .value = self.inner.asBool() }
         else if (T == Null)
-            NULL
+            Null{}
         else
             @ptrCast(@alignCast(self.inner.ptr));
     }
@@ -59,6 +61,11 @@ pub const Object = struct {
                 defer alloc.destroy(ret);
                 ret.value.deinit(alloc);
             },
+            .eval_error => {
+                const err = self.cast(EvalError);
+                defer alloc.destroy(err);
+                err.message.deinit(alloc);
+            },
             else => unreachable,
         }
     }
@@ -69,6 +76,7 @@ pub const ObjectType = enum {
     integer,
     boolean,
     return_value,
+    eval_error,
 
     pub fn isPrimitive(self: ObjectType) bool {
         return switch (self) {
@@ -206,6 +214,34 @@ pub const ReturnValue = struct {
     }
 
     pub fn object(self: *const ReturnValue) Object {
+        return .{
+            .inner = .{ .ptr = self },
+            .vtable = &.{
+                .inspectFn = inspect,
+                .eqlFn = eql,
+                .object_type = object_type,
+            },
+        };
+    }
+};
+
+pub const EvalError = struct {
+    message: String,
+
+    pub const object_type: ObjectType = ObjectType.eval_error;
+
+    pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
+        const err: *const EvalError = @ptrCast(@alignCast(ctx.asPtr()));
+        return .{ .owned = try std.fmt.allocPrint(alloc, "Error: {s}", .{err.message.value()}) };
+    }
+
+    pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
+        const lhs_err: *const EvalError = @ptrCast(@alignCast(lhs.asPtr()));
+        const rhs_err: *const EvalError = @ptrCast(@alignCast(rhs.asPtr()));
+        return std.mem.eql(u8, lhs_err.message.value(), rhs_err.message.value());
+    }
+
+    pub fn object(self: *const EvalError) Object {
         return .{
             .inner = .{ .ptr = self },
             .vtable = &.{

@@ -15,11 +15,13 @@ const pretty = @import("pretty");
 
 const PROMPT = ">> ";
 
-pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
-    var buf = ArrayList(u8).init(alloc);
+pub fn start(arena: *std.heap.ArenaAllocator, in: Reader, out: Writer, err: Writer) !void {
+    const alloc = arena.allocator();
 
     while (true) {
-        defer buf.clearRetainingCapacity();
+        defer _ = arena.reset(.retain_capacity);
+
+        var buf = ArrayList(u8).init(alloc);
         try err.writeAll(PROMPT);
 
         try streamUntilEof(in, buf.writer(), '\n');
@@ -34,11 +36,9 @@ pub fn start(in: Reader, out: Writer, err: Writer, alloc: Allocator) !void {
             try err.print("Error: {s}\n", .{@errorName(e)});
             continue;
         };
-        defer ast.deinit(alloc);
 
-        const evaluated = try evaluator.execute(ast, alloc);
+        const evaluated = try evaluator.execute(alloc, ast);
         const str = try evaluated.inspect(alloc);
-        defer str.deinit(alloc);
         try out.print("{s}\n\n", .{str.value()});
     }
 }

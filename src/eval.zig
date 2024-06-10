@@ -9,79 +9,87 @@ const Integer = @import("object.zig").Integer;
 const Boolean = @import("object.zig").Boolean;
 const Null = @import("object.zig").Null;
 const ReturnValue = @import("object.zig").ReturnValue;
+const EvalError = @import("object.zig").EvalError;
 
-pub fn execute(ast: Ast, alloc: Allocator) !Object {
+const String = @import("lib.zig").String;
+
+pub fn execute(alloc: Allocator, ast: Ast) !Object {
     const program = ast.program.slice();
     var result: Object = Object.NULL;
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result.deinit(alloc);
-        result = try executeStatement(stmt, alloc);
-        if (result.objectType() == .return_value) {
-            const ret = result.cast(ReturnValue);
-            defer alloc.destroy(ret);
-            result = ret.value;
-            break;
+        result = try executeStatement(alloc, stmt);
+        switch (result.objectType()) {
+            .return_value => {
+                const ret = result.cast(ReturnValue);
+                defer alloc.destroy(ret);
+                result = ret.value;
+                break;
+            },
+            .eval_error => break,
+            else => {},
         }
     }
     return result;
 }
 
-fn executeStatement(stmt: Ast.Statement, alloc: Allocator) !Object {
+fn executeStatement(alloc: Allocator, stmt: Ast.Statement) !Object {
     return switch (stmt) {
-        .expr => |expr| try eval(expr, alloc),
+        .expr => |expr| try eval(alloc, expr),
         .@"return" => |opt_expr| b: {
             const ret = try alloc.create(ReturnValue);
             errdefer alloc.destroy(ret);
-            ret.value = if (opt_expr) |expr| try eval(expr, alloc) else Object.NULL;
+            ret.value = if (opt_expr) |expr| try eval(alloc, expr) else Object.NULL;
             break :b ret.object();
         },
         inline else => |_, tag| @panic("Unimplemented (" ++ @tagName(tag) ++ ")"),
     };
 }
 
-const EvalError = error{} || Allocator.Error;
+const Error = error{} || Allocator.Error;
 
-fn eval(expr: Ast.Expression, alloc: Allocator) EvalError!Object {
+fn eval(alloc: Allocator, expr: Ast.Expression) Error!Object {
     return switch (expr) {
         .int => |value| b: {
-            const obj = try alloc.create(Integer);
             comptime std.debug.assert(std.math.maxInt(u64) <= std.math.maxInt(i65));
             comptime std.debug.assert(std.math.maxInt(u64) <= -@as(comptime_int, std.math.minInt(i65)));
-            obj.value = value;
-            break :b obj.object();
+            break :b (Integer{ .value = value }).object();
         },
         .bool => |value| return nativeBoolToBooleanObject(value),
         .unary_op => |operation| b: {
-            const operand = try eval(operation.operand.*, alloc);
-            break :b try evalUnaryOp(operation.op, operand, alloc);
+            const operand = try eval(alloc, operation.operand.*);
+            if (operand.isError()) return operand;
+            break :b try evalUnaryOp(alloc, operation.op, operand);
         },
         .binary_op => |operation| b: {
-            const lhs = try eval(operation.left.*, alloc);
-            const rhs = try eval(operation.right.*, alloc);
-            break :b try evalBinaryOp(lhs, operation.op, rhs, alloc);
+            const lhs = try eval(alloc, operation.left.*);
+            if (lhs.isError()) return lhs;
+            const rhs = try eval(alloc, operation.right.*);
+            if (rhs.isError()) return rhs;
+            break :b try evalBinaryOp(alloc, lhs, operation.op, rhs);
         },
-        .@"if" => |conditional| try evalIfExpr(conditional, alloc),
-        .block => |block| try evalBlockExpr(block, alloc),
+        .@"if" => |conditional| try evalIfExpr(alloc, conditional),
+        .block => |block| try evalBlockExpr(alloc, block),
         inline else => |_, tag| @panic("Unimplemented (" ++ @tagName(tag) ++ ")"),
     };
 }
 
-fn evalUnaryOp(operator: Ast.Expression.UnaryOp, operand: Object, alloc: Allocator) !Object {
+fn evalUnaryOp(alloc: Allocator, operator: Ast.Expression.UnaryOp, operand: Object) !Object {
     return switch (operator) {
-        .not => evalNotOp(operand),
-        .minus => try evalMinusOp(operand, alloc),
+        .not => try evalNotOp(alloc, operand),
+        .minus => try evalMinusOp(alloc, operand),
     };
 }
 
-fn evalNotOp(operand: Object) Object {
+fn evalNotOp(alloc: Allocator, operand: Object) !Object {
     return switch (operand.objectType()) {
         .boolean => nativeBoolToBooleanObject(!operand.eql(Object.TRUE)),
-        else => Object.NULL, // TODO: handle properly
+        else => |object_type| try newErrorFmt(alloc, "type mismatch: !{s}", .{@tagName(object_type)}),
     };
 }
 
-fn evalMinusOp(operand: Object, alloc: Allocator) !Object {
+fn evalMinusOp(alloc: Allocator, operand: Object) !Object {
     return switch (operand.objectType()) {
         .integer => {
             const int = operand.cast(Integer);
@@ -89,11 +97,11 @@ fn evalMinusOp(operand: Object, alloc: Allocator) !Object {
             obj.value = -int.value;
             return obj.object();
         },
-        else => Object.NULL, // TODO: handle properly
+        else => |object_type| try newErrorFmt(alloc, "type mismatch: -{s}", .{@tagName(object_type)}),
     };
 }
 
-fn evalBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object, alloc: Allocator) !Object {
+fn evalBinaryOp(alloc: Allocator, lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !Object {
     return switch (operator) {
         .add,
         .sub,
@@ -104,14 +112,18 @@ fn evalBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object, all
         .gt,
         .leq,
         .geq,
-        => try evalIntegerBinaryOp(lhs, operator, rhs, alloc),
+        => try evalIntegerBinaryOp(alloc, lhs, operator, rhs),
         .eq, .neq => try evalEqualityOp(lhs, operator, rhs),
     };
 }
 
-fn evalIntegerBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object, alloc: Allocator) !Object {
+fn evalIntegerBinaryOp(alloc: Allocator, lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !Object {
     if (lhs.objectType() != .integer or rhs.objectType() != .integer) {
-        return Object.NULL; // TODO: handle properly
+        return try newErrorFmt(
+            alloc,
+            "type mismatch: {s} {} {s}",
+            .{ @tagName(lhs.objectType()), operator, @tagName(rhs.objectType()) },
+        );
     }
     const lhs_int = lhs.cast(Integer);
     const rhs_int = rhs.cast(Integer);
@@ -120,11 +132,11 @@ fn evalIntegerBinaryOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Obje
         .add => lhs_int.value +% rhs_int.value,
         .sub => lhs_int.value -% rhs_int.value,
         .mul => lhs_int.value *% rhs_int.value,
-        .div => std.math.divTrunc(i63, lhs_int.value, rhs_int.value) catch {
-            return Object.NULL; // TODO: handle properly
+        .div => std.math.divTrunc(i63, lhs_int.value, rhs_int.value) catch |err| {
+            return try newErrorFmt(alloc, "integer division: {s}", .{@errorName(err)});
         },
-        .mod => std.math.mod(i63, lhs_int.value, rhs_int.value) catch {
-            return Object.NULL; // TODO: handle properly
+        .mod => std.math.mod(i63, lhs_int.value, rhs_int.value) catch |err| {
+            return try newErrorFmt(alloc, "integer modulo: {s}", .{@errorName(err)});
         },
         .lt => return nativeBoolToBooleanObject(lhs_int.value < rhs_int.value),
         .gt => return nativeBoolToBooleanObject(lhs_int.value > rhs_int.value),
@@ -147,33 +159,47 @@ fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !
     return nativeBoolToBooleanObject(result);
 }
 
-fn evalIfExpr(conditional: Ast.Expression.IfExpr, alloc: Allocator) !Object {
-    const cond_obj = try eval(conditional.cond.*, alloc);
+fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr) !Object {
+    const cond_obj = try eval(alloc, conditional.cond.*);
+    if (cond_obj.isError()) return cond_obj;
     if (cond_obj.objectType() != .boolean) {
-        return Object.NULL; // TODO: handle properly
+        return try newErrorFmt(alloc, "type mismatch: {s} in condition", .{@tagName(cond_obj.objectType())});
     }
     const cond_bool = cond_obj.cast(Boolean);
     return if (cond_bool.value)
-        try evalBlockExpr(conditional.conseq, alloc)
+        try evalBlockExpr(alloc, conditional.conseq)
     else if (conditional.alt) |alt|
-        try evalBlockExpr(alt, alloc)
+        try evalBlockExpr(alloc, alt)
     else
         Object.NULL;
 }
 
-fn evalBlockExpr(block: Ast.Expression.BlockExpr, alloc: Allocator) !Object {
+fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr) !Object {
     const program = block.program.slice();
     var result: Object = Object.NULL;
     for (0..program.len) |i| {
         const stmt = program.get(i);
-        result = try executeStatement(stmt, alloc);
-        if (result.objectType() == .return_value) break;
+        result = try executeStatement(alloc, stmt);
+        if (result.objectType() == .return_value or result.objectType() == .eval_error) break;
     }
     return result;
 }
 
 inline fn nativeBoolToBooleanObject(value: bool) Object {
     return if (value) Object.TRUE else Object.FALSE;
+}
+
+fn newErrorFmt(alloc: Allocator, comptime fmt: []const u8, args: anytype) !Object {
+    const message = try std.fmt.allocPrint(alloc, fmt, args);
+    const err = try alloc.create(EvalError);
+    err.message = .{ .owned = message };
+    return err.object();
+}
+
+fn newError(alloc: Allocator, message: []const u8) !Object {
+    const err = try alloc.create(EvalError);
+    err.message = .{ .borrowed = message };
+    return err.object();
 }
 
 const testing = std.testing;
@@ -209,7 +235,7 @@ test "eval integer expression" {
     inline for (cases, 0..) |case, i| {
         const evaluated = try testEval(case.input, alloc);
         testIntegerObject(evaluated, case.expected, alloc) catch |err| {
-            std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+            std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
             return err;
         };
     }
@@ -247,7 +273,7 @@ test "eval bool expression" {
     inline for (cases, 0..) |case, i| {
         const evaluated = try testEval(case.input, alloc);
         testBooleanObject(evaluated, case.expected, alloc) catch |err| {
-            std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+            std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
             return err;
         };
     }
@@ -260,7 +286,10 @@ test "eval if/else expression" {
     }{
         .{ .input = "if (true) { 10 }", .expected = (Integer{ .value = 10 }).object() },
         .{ .input = "if (false) { 10 }", .expected = Object.NULL },
-        .{ .input = "if (1) { 10 }", .expected = Object.NULL },
+        .{
+            .input = "if (1) { 10 }",
+            .expected = (&EvalError{ .message = .{ .borrowed = "type mismatch: integer in condition" } }).object(),
+        },
         .{ .input = "if (1 < 2) { 10 }", .expected = (Integer{ .value = 10 }).object() },
         .{ .input = "if (1 > 2) { 10 }", .expected = Object.NULL },
         .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = (Integer{ .value = 20 }).object() },
@@ -274,16 +303,20 @@ test "eval if/else expression" {
 
     inline for (cases, 0..) |case, i| {
         const evaluated = try testEval(case.input, alloc);
-        if (comptime (case.expected.objectType() == .integer)) {
-            testIntegerObject(evaluated, case.expected.cast(Integer).value, alloc) catch |err| {
-                std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+        switch (comptime case.expected.objectType()) {
+            .integer => testIntegerObject(evaluated, case.expected.cast(Integer).value, alloc) catch |err| {
+                std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
                 return err;
-            };
-        } else {
-            testNullObject(evaluated, alloc) catch |err| {
-                std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
+            },
+            .eval_error => testErrorObject(evaluated, case.expected.cast(EvalError).message.value(), alloc) catch |err| {
+                std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
                 return err;
-            };
+            },
+            .null => testNullObject(evaluated, alloc) catch |err| {
+                std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
+                return err;
+            },
+            else => unreachable,
         }
     }
 }
@@ -325,15 +358,74 @@ test "eval return statement" {
     const bare_return = "9; return; 8;";
     const evaluated = try testEval(bare_return, alloc);
     testNullObject(evaluated, alloc) catch |err| {
-        std.debug.print("[case {d}] {s}:\n", .{ cases.len, bare_return });
+        std.debug.print("[case {d}] \"{s}\":\n", .{ cases.len, bare_return });
         return err;
     };
+}
+
+test "error handling" {
+    const cases = comptime [_]struct {
+        input: []const u8,
+        expected: []const u8,
+    }{
+        .{
+            .input = "5 + true;",
+            .expected = "type mismatch: integer + boolean",
+        },
+        .{
+            .input = "5 + true; 5;",
+            .expected = "type mismatch: integer + boolean",
+        },
+        .{
+            .input = "-true;",
+            .expected = "type mismatch: -boolean",
+        },
+        .{
+            .input = "!0;",
+            .expected = "type mismatch: !integer",
+        },
+        .{
+            .input = "true + false;",
+            .expected = "type mismatch: boolean + boolean",
+        },
+        .{
+            .input = "5; true + false; 5;",
+            .expected = "type mismatch: boolean + boolean",
+        },
+        .{
+            .input = "if (10 > 1) { true + false; }",
+            .expected = "type mismatch: boolean + boolean",
+        },
+        .{
+            .input =
+            \\if (10 > 1) {
+            \\    if (10 > 1) {
+            \\        return true + false;
+            \\    }
+            \\    return 1;
+            \\}
+            ,
+            .expected = "type mismatch: boolean + boolean",
+        },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    inline for (cases, 0..) |case, i| {
+        const evaluated = try testEval(case.input, alloc);
+        testErrorObject(evaluated, case.expected, alloc) catch |err| {
+            std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
+            return err;
+        };
+    }
 }
 
 fn testIntegerObject(obj: Object, expected: i63, alloc: Allocator) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.integer, object_type) catch |err| {
-        std.debug.print("Object is not integer. Got .{s} ({s})", .{
+        std.debug.print("Object is not integer. Got .{s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
@@ -346,7 +438,7 @@ fn testIntegerObject(obj: Object, expected: i63, alloc: Allocator) !void {
 fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.boolean, object_type) catch |err| {
-        std.debug.print("Object is not boolean. Got .{s} ({s})", .{
+        std.debug.print("Object is not boolean. Got .{s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
@@ -359,12 +451,25 @@ fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
 fn testNullObject(obj: Object, alloc: Allocator) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.null, object_type) catch |err| {
-        std.debug.print("Object is not null. Got .{s} ({s})", .{
+        std.debug.print("Object is not null. Got .{s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
         return err;
     };
+}
+
+fn testErrorObject(obj: Object, expected: []const u8, alloc: Allocator) !void {
+    const object_type = obj.objectType();
+    testing.expectEqual(.eval_error, object_type) catch |err| {
+        std.debug.print("Object is not eval_error. Got .{s} ({s})\n", .{
+            @tagName(object_type),
+            (try obj.inspect(alloc)).value(),
+        });
+        return err;
+    };
+    const eval_err = obj.cast(EvalError);
+    try testing.expectEqualStrings(expected, eval_err.message.value());
 }
 
 const Lexer = @import("Lexer.zig");
@@ -375,5 +480,5 @@ fn testEval(input: []const u8, alloc: Allocator) !Object {
     var parser = Parser.init(&lexer);
     const ast = try parser.parseProgram(alloc);
 
-    return try execute(ast, alloc);
+    return try execute(alloc, ast);
 }
