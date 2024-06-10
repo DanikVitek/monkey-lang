@@ -29,7 +29,7 @@ const Ast = @This();
 
 pub const Statement = union(enum) {
     let: LetStmt,
-    @"return": Expression,
+    @"return": ?Expression,
     expr: Expression,
 
     pub const LetStmt = struct {
@@ -43,6 +43,7 @@ pub const Statement = union(enum) {
 
     pub fn deinit(self: Statement, alloc: Allocator) void {
         switch (self) {
+            .@"return" => |opt_expr| if (opt_expr) |expr| expr.deinit(alloc),
             inline else => |stmt| stmt.deinit(alloc),
         }
     }
@@ -51,10 +52,13 @@ pub const Statement = union(enum) {
         _ = fmt;
         _ = options;
         return switch (value) {
-            .let => |stmt| std.fmt.format(writer, "let {s} = {};", .{ stmt.name, stmt.value }),
-            .@"return" => |expr| std.fmt.format(writer, "return {};", .{expr}),
+            .let => |stmt| writer.print("let {s} = {};", .{ stmt.name, stmt.value }),
+            .@"return" => |opt_expr| if (opt_expr) |expr|
+                writer.print("return {};", .{expr})
+            else
+                writer.writeAll("return;"),
             .expr => |expr| {
-                try std.fmt.format(writer, "{}", .{expr});
+                try writer.print("{}", .{expr});
                 if (std.meta.activeTag(expr) != .block) {
                     try writer.writeByte(';');
                 }
@@ -104,7 +108,6 @@ pub const Expression = union(enum) {
 
     pub const BlockExpr = struct {
         program: MultiArrayList(Statement) = .{},
-        @"return": ?*const Expression = null,
 
         pub fn deinit(self: BlockExpr, alloc: Allocator) void {
             var program = self.program;
@@ -114,10 +117,6 @@ pub const Expression = union(enum) {
                 stmt.deinit(alloc);
             }
             program.deinit(alloc);
-            if (self.@"return") |expr| {
-                expr.deinit(alloc);
-                alloc.destroy(expr);
-            }
         }
 
         pub fn format(self: BlockExpr, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
@@ -127,16 +126,17 @@ pub const Expression = union(enum) {
             const stmts = self.program.slice();
             try writer.writeByte('{');
 
-            for (0..stmts.len) |i| {
-                const stmt = stmts.get(i);
-                try std.fmt.format(writer, " {}", .{stmt});
-            }
-            if (self.@"return") |expr| {
-                try std.fmt.format(writer, " {}", .{expr});
-            }
-
-            if (stmts.len > 0 or self.@"return" != null) {
-                try writer.writeByte(' ');
+            if (stmts.len > 0) {
+                for (0..stmts.len - 1) |i| {
+                    const stmt = stmts.get(i);
+                    try writer.print(" {}", .{stmt});
+                }
+                const last_stmt = stmts.get(stmts.len - 1);
+                if (std.meta.activeTag(last_stmt) == .expr) {
+                    try writer.print(" {} ", .{last_stmt.expr});
+                } else {
+                    try writer.print(" {} ", .{last_stmt});
+                }
             }
             try writer.writeByte('}');
         }

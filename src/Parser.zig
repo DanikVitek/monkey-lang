@@ -59,16 +59,16 @@ fn parseStmt(self: *Parser, alloc: Allocator) !?Statement {
 fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
     std.debug.assert(self.curr_token.? == .let);
 
-    try self.expectPeek(.ident, error.ExpectedIdent);
+    try self.expectPeekAdvance(.ident, error.ExpectedIdent);
     const name = self.curr_token.?.ident;
 
-    try self.expectPeek(.assign, error.ExpectedAssign);
+    try self.expectPeekAdvance(.assign, error.ExpectedAssign);
 
     self.advanceTokens();
     const value = try PrattParser.parseExpr(self, .lowest, alloc);
     errdefer value.deinit(alloc);
 
-    try self.expectPeek(.semicolon, error.ExpectedSemicolon);
+    try self.expectPeekAdvance(.semicolon, error.ExpectedSemicolon);
 
     return Statement{ .let = .{ .name = name, .value = value } };
 }
@@ -76,11 +76,13 @@ fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
 fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
     std.debug.assert(self.curr_token.? == .@"return");
 
-    self.advanceTokens();
-    const expr = try PrattParser.parseExpr(self, .lowest, alloc);
-    errdefer expr.deinit(alloc);
+    const expr: ?Expression = if (!self.peekTokenIs(.semicolon)) b: {
+        self.advanceTokens();
+        break :b try PrattParser.parseExpr(self, .lowest, alloc);
+    } else null;
+    errdefer if (expr) |e| e.deinit(alloc);
 
-    try self.expectPeek(.semicolon, error.ExpectedSemicolon);
+    try self.expectPeekAdvance(.semicolon, error.ExpectedSemicolon);
 
     return Statement{ .@"return" = expr };
 }
@@ -90,7 +92,7 @@ fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
     errdefer expr.deinit(alloc);
 
     if (!self.currTokenIs(.rbrace)) {
-        try self.expectPeek(.semicolon, error.ExpectedSemicolon);
+        try self.expectPeekAdvance(.semicolon, error.ExpectedSemicolon);
     } else if (self.peekTokenIs(.semicolon)) {
         self.advanceTokens();
     }
@@ -98,7 +100,7 @@ fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
     return Statement{ .expr = expr };
 }
 
-fn expectPeek(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
+fn expectPeekAdvance(self: *Parser, expected: std.meta.Tag(Token), err: anytype) @TypeOf(err)!void {
     if (!self.peekTokenIs(expected)) {
         // std.log.err("Expected '.{s}', but got '{?}'", .{ @tagName(expected), self.peek_token });
         return err;
@@ -261,7 +263,7 @@ const PrattParser = struct {
         const expr = try parseExpr(p, .lowest, alloc);
         errdefer expr.deinit(alloc);
 
-        try p.expectPeek(.rparen, error.ExpectedRParen);
+        try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
 
         return expr;
     }
@@ -269,14 +271,14 @@ const PrattParser = struct {
     fn parseIfExpr(p: *Parser, alloc: Allocator) !Expression {
         std.debug.assert(p.curr_token.? == .@"if");
 
-        try p.expectPeek(.lparen, error.ExpectedLParen);
+        try p.expectPeekAdvance(.lparen, error.ExpectedLParen);
 
         p.advanceTokens();
         const cond = try parseExpr(p, .lowest, alloc);
         errdefer cond.deinit(alloc);
 
-        try p.expectPeek(.rparen, error.ExpectedRParen);
-        try p.expectPeek(.lbrace, error.ExpectedLBrace);
+        try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
+        try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
         const conseq = try parseBlockExpr(p, alloc);
         errdefer conseq.deinit(alloc);
@@ -284,7 +286,7 @@ const PrattParser = struct {
         const alt: ?BlockExpr = if (p.peekTokenIs(.@"else")) b: {
             p.advanceTokens();
 
-            try p.expectPeek(.lbrace, error.ExpectedLBrace);
+            try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
             break :b try parseBlockExpr(p, alloc);
         } else null;
@@ -327,51 +329,32 @@ const PrattParser = struct {
             prev_lexer = prev_parser.lexer.*;
         }
 
-        const @"return": ?*const Expression = if (not_stmt) b: {
+        if (not_stmt) {
             prev_parser.lexer.* = prev_lexer;
             p.* = prev_parser;
 
             const expr = try parseExpr(p, .lowest, alloc);
-            errdefer expr.deinit(alloc);
+            try program.append(alloc, .{ .expr = expr });
 
-            try p.expectPeek(.rbrace, error.ExpectedRBrace);
-
-            const boxed_expr = try alloc.create(Expression);
-            boxed_expr.* = expr;
-
-            break :b boxed_expr;
-        } else null;
-        errdefer if (@"return") |expr| {
-            expr.deinit(alloc);
-        };
+            try p.expectPeekAdvance(.rbrace, error.ExpectedRBrace);
+        }
 
         if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;
 
-        return BlockExpr{ .program = program, .@"return" = @"return" };
+        return BlockExpr{ .program = program };
     }
 
     fn parseFuncExpr(p: *Parser, alloc: Allocator) !Expression {
         std.debug.assert(p.currTokenIs(.func));
 
-        try p.expectPeek(.lparen, error.ExpectedLParen);
+        try p.expectPeekAdvance(.lparen, error.ExpectedLParen);
 
         var params = try parseFuncParams(p, alloc);
         errdefer params.deinit(alloc);
 
-        try p.expectPeek(.lbrace, error.ExpectedLBrace);
+        try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
-        var body = try parseBlockExpr(p, alloc);
-        if (body.program.len > 0 and body.@"return" == null) {
-            const last_stmt = body.program.get(body.program.len - 1);
-            switch (last_stmt) {
-                .@"return" => {
-                    const ret = try alloc.create(Expression);
-                    ret.* = body.program.pop().@"return";
-                    body.@"return" = ret;
-                },
-                else => {},
-            }
-        }
+        const body = try parseBlockExpr(p, alloc);
 
         return Expression{ .func = .{ .params = params, .body = body } };
     }
@@ -401,7 +384,7 @@ const PrattParser = struct {
             }
         }
 
-        try p.expectPeek(.rparen, error.ExpectedRParen);
+        try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
 
         return params;
     }
@@ -448,7 +431,7 @@ const PrattParser = struct {
             try args.append(alloc, try parseExpr(p, .lowest, alloc));
         }
 
-        try p.expectPeek(.rparen, error.ExpectedRParen);
+        try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
 
         return args;
     }
@@ -827,10 +810,10 @@ test "if expression" {
         expr.cond.*,
     );
 
-    try testing.expectEqual(@as(usize, 0), expr.conseq.program.len);
+    try testing.expectEqual(@as(usize, 1), expr.conseq.program.len);
     try testing.expectEqualDeep(
-        &Expression{ .ident = "x" },
-        expr.conseq.@"return",
+        Expression{ .ident = "x" },
+        expr.conseq.program.get(0).expr,
     );
 
     try testing.expectEqual(
@@ -862,17 +845,17 @@ test "if/else expression" {
         expr.cond.*,
     );
 
-    try testing.expectEqual(@as(usize, 0), expr.conseq.program.len);
+    try testing.expectEqual(@as(usize, 1), expr.conseq.program.len);
     try testing.expectEqualDeep(
-        &Expression{ .ident = "x" },
-        expr.conseq.@"return",
+        Expression{ .ident = "x" },
+        expr.conseq.program.get(0).expr,
     );
 
     try testing.expect(expr.alt != null);
-    try testing.expectEqual(@as(usize, 0), expr.alt.?.program.len);
+    try testing.expectEqual(@as(usize, 1), expr.alt.?.program.len);
     try testing.expectEqualDeep(
-        &Expression{ .ident = "y" },
-        expr.alt.?.@"return",
+        Expression{ .ident = "y" },
+        expr.alt.?.program.get(0).expr,
     );
 }
 
@@ -894,15 +877,15 @@ test "fn parsing" {
     try testing.expectEqualStrings("x", expr.params.items[0]);
     try testing.expectEqualStrings("y", expr.params.items[1]);
 
-    try testing.expectEqual(@as(usize, 1), expr.body.program.len);
+    try testing.expectEqual(@as(usize, 2), expr.body.program.len);
     try testing.expectEqualDeep(Statement{ .expr = .unit }, expr.body.program.get(0));
     try testing.expectEqualDeep(
-        &Expression{ .binary_op = .{
+        Expression{ .binary_op = .{
             .left = &Expression{ .ident = "x" },
             .op = BinaryOp.add,
             .right = &Expression{ .ident = "y" },
         } },
-        expr.body.@"return",
+        expr.body.program.get(1).expr,
     );
 }
 

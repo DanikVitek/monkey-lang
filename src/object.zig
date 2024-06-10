@@ -50,12 +50,32 @@ pub const Object = struct {
         else
             *const T;
     }
+
+    pub fn deinit(self: Object, alloc: Allocator) void {
+        if (self.objectType().isPrimitive()) return;
+        switch (self.objectType()) {
+            .return_value => {
+                const ret = self.cast(ReturnValue);
+                defer alloc.destroy(ret);
+                ret.value.deinit(alloc);
+            },
+            else => unreachable,
+        }
+    }
 };
 
 pub const ObjectType = enum {
     null,
     integer,
     boolean,
+    return_value,
+
+    pub fn isPrimitive(self: ObjectType) bool {
+        return switch (self) {
+            .null, .integer, .boolean => true,
+            else => false,
+        };
+    }
 };
 
 const ObjectInner = packed union {
@@ -160,6 +180,34 @@ pub const Null = struct {
     pub fn object(_: Null) Object {
         return .{
             .inner = .{ .ptr = &{} },
+            .vtable = &.{
+                .inspectFn = inspect,
+                .eqlFn = eql,
+                .object_type = object_type,
+            },
+        };
+    }
+};
+
+pub const ReturnValue = struct {
+    value: Object,
+
+    pub const object_type: ObjectType = ObjectType.return_value;
+
+    pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
+        const ret: *const ReturnValue = @ptrCast(@alignCast(ctx.asPtr()));
+        return try ret.value.inspect(alloc);
+    }
+
+    pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
+        const lhs_ret: *const ReturnValue = @ptrCast(@alignCast(lhs.asPtr()));
+        const rhs_ret: *const ReturnValue = @ptrCast(@alignCast(rhs.asPtr()));
+        return lhs_ret.value.eql(rhs_ret.value);
+    }
+
+    pub fn object(self: *const ReturnValue) Object {
+        return .{
+            .inner = .{ .ptr = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
