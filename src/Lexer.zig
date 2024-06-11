@@ -1,5 +1,5 @@
 const std = @import("std");
-const ComptimeStringMap = std.ComptimeStringMap;
+const StaticStringMap = std.StaticStringMap;
 
 const Token = @import("token.zig").Token;
 
@@ -141,18 +141,17 @@ fn isDigit(char: ?u21) bool {
     };
 }
 
-const Keywords = ComptimeStringMap(Token, .{
-    .{ "fn", .func },
-    .{ "let", .let },
-    .{ "true", .true },
-    .{ "false", .false },
-    .{ "if", .@"if" },
-    .{ "else", .@"else" },
-    .{ "return", .@"return" },
-});
-
 fn fromIdentifier(literal: []const u8) Token {
-    return Keywords.get(literal) orelse .{ .ident = literal };
+    const keywords = comptime StaticStringMap(Token).initComptime(.{
+        .{ "fn", .func },
+        .{ "let", .let },
+        .{ "true", .true },
+        .{ "false", .false },
+        .{ "if", .@"if" },
+        .{ "else", .@"else" },
+        .{ "return", .@"return" },
+    });
+    return keywords.get(literal) orelse .{ .ident = literal };
 }
 
 const testing = std.testing;

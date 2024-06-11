@@ -252,3 +252,28 @@ pub const EvalError = struct {
         };
     }
 };
+
+pub const Environment = struct {
+    store: std.StringHashMapUnmanaged(Object) = .{},
+
+    pub fn get(self: *const Environment, name: []const u8) ?Object {
+        return self.store.get(name);
+    }
+
+    pub fn set(self: *Environment, alloc: Allocator, name: []const u8, value: Object) Allocator.Error!void {
+        try self.store.put(alloc, name, value);
+    }
+
+    pub fn clone(self: *const Environment, alloc: Allocator) Allocator.Error!Environment {
+        return Environment{ .store = try self.store.clone(alloc) };
+    }
+
+    pub fn deinit(self: Environment, alloc: Allocator) void {
+        var iter = self.store.valueIterator();
+        while (iter.next()) |value| {
+            value.deinit(alloc);
+        }
+
+        self.store.deinit(alloc);
+    }
+};

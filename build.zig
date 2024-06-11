@@ -15,16 +15,17 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const pretty = b.dependency("pretty", .{ .target = target, .optimize = optimize });
+    // const pretty = b.dependency("pretty", .{ .target = target, .optimize = optimize });
 
     const exe = b.addExecutable(.{
         .name = "monkey-lang",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .single_threaded = true, // TODO: remove when multi-threading is supported
     });
 
-    exe.root_module.addImport("pretty", pretty.module("pretty"));
+    // exe.root_module.addImport("pretty", pretty.module("pretty"));
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -58,9 +59,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .single_threaded = true, // TODO: remove when multi-threading is supported
     });
 
-    exe_unit_tests.root_module.addImport("pretty", pretty.module("pretty"));
+    // exe_unit_tests.root_module.addImport("pretty", pretty.module("pretty"));
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
