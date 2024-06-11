@@ -33,6 +33,7 @@ fn advanceTokens(self: *Parser) void {
     self.peek_token = self.lexer.nextToken();
 }
 
+/// Caller owns the returned memory.
 pub fn parseProgram(self: *Parser, alloc: Allocator) !Ast {
     var program = MultiArrayList(Ast.Statement){};
     errdefer (Ast{ .program = program }).deinit(alloc);
@@ -60,7 +61,8 @@ fn parseLetStmt(self: *Parser, alloc: Allocator) !Statement {
     std.debug.assert(self.curr_token.? == .let);
 
     try self.expectPeekAdvance(.ident, error.ExpectedIdent);
-    const name = self.curr_token.?.ident;
+    const name = try alloc.dupe(u8, self.curr_token.?.ident);
+    errdefer alloc.free(name);
 
     try self.expectPeekAdvance(.assign, error.ExpectedAssign);
 
@@ -173,7 +175,7 @@ const PrattParser = struct {
         const curr_tok = p.curr_token orelse return error.UnexpectedEof;
         return switch (curr_tok) {
             .false, .true => parseBool(p),
-            .ident => parseIdent(p),
+            .ident => try parseIdent(alloc, p),
             .int => parseInt(p),
             .bang, .minus => parsePrefixExpr(alloc, p),
             .lparen => parseGroupExpr(alloc, p),
@@ -201,8 +203,8 @@ const PrattParser = struct {
         } };
     }
 
-    inline fn parseIdent(p: *const Parser) Expression {
-        return Expression{ .ident = p.curr_token.?.ident };
+    inline fn parseIdent(alloc: Allocator, p: *const Parser) Allocator.Error!Expression {
+        return Expression{ .ident = try alloc.dupe(u8, p.curr_token.?.ident) };
     }
 
     inline fn parseInt(p: *const Parser) !Expression {
@@ -448,10 +450,10 @@ test "let statements" {
     var lexer = try Lexer.init(input);
     var parser = Parser.init(&lexer);
 
-    var program = (try parser.parseProgram(testing.allocator)).program;
-    defer program.deinit(testing.allocator);
+    var ast = (try parser.parseProgram(testing.allocator));
+    defer ast.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 3), program.len);
+    try testing.expectEqual(@as(usize, 3), ast.program.len);
 
     const cases = [_]struct { []const u8, Expression }{
         .{ "x", .{ .int = 5 } },
@@ -459,7 +461,7 @@ test "let statements" {
         .{ "foobar", .{ .int = 696969 } },
     };
 
-    const statements = program.slice();
+    const statements = ast.program.slice();
     for (0..statements.len, cases) |i, case| {
         const stmt = statements.get(i);
         try testing.expectEqualStrings(case[0], stmt.let.name);
@@ -523,16 +525,16 @@ test "identifier expression" {
     var lexer = try Lexer.init(input);
     var parser = Parser.init(&lexer);
 
-    var program = (try parser.parseProgram(testing.allocator)).program;
-    defer program.deinit(testing.allocator);
+    var ast = (try parser.parseProgram(testing.allocator));
+    defer ast.deinit(testing.allocator);
 
-    try testing.expectEqual(@as(usize, 1), program.len);
+    try testing.expectEqual(@as(usize, 1), ast.program.len);
 
     const cases = [_]Statement{
         .{ .expr = .{ .ident = "foobar" } },
     };
 
-    const statements = program.slice();
+    const statements = ast.program.slice();
     for (0..statements.len, cases) |i, case| {
         const stmt = statements.get(i);
         try testing.expectEqualDeep(case, stmt);
