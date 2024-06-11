@@ -37,6 +37,7 @@ pub const Statement = union(enum) {
         value: Expression,
 
         pub inline fn deinit(self: LetStmt, alloc: Allocator) void {
+            alloc.free(self.name);
             self.value.deinit(alloc);
         }
     };
@@ -277,6 +278,7 @@ pub const Expression = union(enum) {
 
     pub fn deinit(self: Expression, alloc: Allocator) void {
         switch (self) {
+            .ident => |name| alloc.free(name),
             .binary_op => |expr| {
                 expr.left.deinit(alloc);
                 alloc.destroy(expr.left);

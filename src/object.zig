@@ -30,11 +30,11 @@ pub const Object = struct {
         return self.objectType() == other.objectType() and self.vtable.eqlFn(self.inner, other.inner);
     }
 
-    pub fn isError(self: Object) bool {
+    pub inline fn isError(self: Object) bool {
         return self.objectType() == ObjectType.eval_error;
     }
 
-    pub fn cast(self: Object, comptime T: type) CastType(T) {
+    pub inline fn cast(self: Object, comptime T: type) CastType(T) {
         std.debug.assert(self.objectType() == T.object_type);
         return if (T == Integer)
             Integer{ .value = self.inner.asInt() }

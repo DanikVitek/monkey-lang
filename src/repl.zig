@@ -17,7 +17,7 @@ const pretty = @import("pretty");
 const PROMPT = ">> ";
 
 pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
-    var buf = ArrayList(u8).init(alloc);
+    var source = ArrayList(u8).init(alloc);
     var line_start: usize = 0;
     var line_end: usize = 0;
 
@@ -26,14 +26,20 @@ pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
     while (true) {
         try err.writeAll(PROMPT);
 
-        const len_read = try streamUntilEof(in, buf.writer(), '\n');
-        try buf.append(';');
-        const len = len_read + 1;
+        var len_read = try streamUntilEof(in, source.writer(), '\n');
+        if (source.getLastOrNull()) |last| {
+            if (last == '\r') {
+                _ = source.pop();
+                len_read -= 1;
+            }
+        }
+        try source.append(';');
+        len_read += 1;
 
         line_start = line_end;
-        line_end += len;
+        line_end += len_read;
 
-        var lexer = try Lexer.init(buf.items[line_start..line_end]);
+        var lexer = try Lexer.init(source.items[line_start..]);
         var parser = Parser.init(&lexer);
         const ast = parser.parseProgram(alloc) catch |e| {
             try err.print("Error: {s}\n", .{@errorName(e)});
@@ -41,7 +47,17 @@ pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
         };
 
         const evaluated = try evaluator.execute(alloc, ast, &env);
+
+        std.debug.print("Env:\n", .{});
+        var env_iter = env.store.iterator();
+        while (env_iter.next()) |entry| {
+            const value_str = try entry.value_ptr.inspect(alloc);
+            defer value_str.deinit(alloc);
+            try out.print("\t{s}: {s}\n", .{ entry.key_ptr.*, value_str.value() });
+        }
+
         const str = try evaluated.inspect(alloc);
+        defer str.deinit(alloc);
         try out.print("{s}\n\n", .{str.value()});
     }
 }

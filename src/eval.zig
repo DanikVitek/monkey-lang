@@ -183,10 +183,10 @@ fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *const 
 fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const Environment) !Object {
     var block_env = try env.clone(alloc); // TODO: replace by persistent map clone
     defer {
-        var block_keys = block_env.store.keyIterator();
-        while (block_keys.next()) |key| {
-            if (env.store.contains(key.*)) continue;
-            block_env.get(key.*).?.deinit(alloc);
+        var block_iter = block_env.store.iterator();
+        while (block_iter.next()) |entry| {
+            if (env.store.contains(entry.key_ptr.*)) continue;
+            entry.value_ptr.deinit(alloc);
         }
         block_env.store.deinit(alloc);
     }
