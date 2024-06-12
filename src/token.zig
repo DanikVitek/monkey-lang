@@ -68,13 +68,14 @@ pub const Token = union(enum) {
     @"else",
     /// `return`
     @"return",
+    /// `break`
+    @"break",
 
     pub fn format(value: Token, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = options;
         return if (std.mem.eql(u8, "s", fmt)) switch (value) {
             .illegal => |lit| std.fmt.format(writer, ".{{ .illegal = {s} }}", .{lit}),
-            .ident => |lit| std.fmt.format(writer, "{s}", .{lit}),
-            .int => |lit| std.fmt.format(writer, "{s}", .{lit}),
+            inline .ident, .int => |lit| std.fmt.format(writer, "{s}", .{lit}),
             .assign => writer.writeByte('='),
             .plus => writer.writeByte('+'),
             .minus => writer.writeByte('-'),
@@ -95,19 +96,15 @@ pub const Token = union(enum) {
             .eq => writer.writeAll("=="),
             .neq => writer.writeAll("!="),
             .func => writer.writeAll("fn"),
-            .let => writer.writeAll("let"),
-            .true => writer.writeAll("true"),
-            .false => writer.writeAll("false"),
-            .@"if" => writer.writeAll("if"),
-            .@"else" => writer.writeAll("else"),
-            .@"return" => writer.writeAll("return"),
+            inline .let, .true, .false, .@"if", .@"else", .@"return", .@"break" => |_, tag| writer.writeAll(@tagName(tag)),
         } else switch (value) {
-            .illegal, .ident, .int => |lit| std.fmt.format(
+            inline .illegal, .ident, .int => |lit, tag| std.fmt.format(
                 writer,
-                ".{{ .{s} = {s} }}",
-                .{ @tagName(value), lit },
+                ".{{ ." ++ @tagName(tag) ++ " = {s} }}",
+                .{lit},
             ),
-            else => std.fmt.format(writer, ".{s}", .{@tagName(value)}),
+            inline .@"else", .@"return", .@"break" => |_, tag| writer.writeAll(".@\"" ++ @tagName(tag) ++ "\""),
+            inline else => |_, tag| writer.writeAll("." ++ @tagName(tag)),
         };
     }
 };

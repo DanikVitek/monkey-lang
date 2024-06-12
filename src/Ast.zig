@@ -29,8 +29,9 @@ const Ast = @This();
 
 pub const Statement = union(enum) {
     let: LetStmt,
-    @"return": ?Expression,
     expr: Expression,
+    @"return": ?Expression,
+    @"break": ?Expression,
 
     pub const LetStmt = struct {
         name: []const u8,
@@ -44,7 +45,7 @@ pub const Statement = union(enum) {
 
     pub fn deinit(self: Statement, alloc: Allocator) void {
         switch (self) {
-            .@"return" => |opt_expr| if (opt_expr) |expr| expr.deinit(alloc),
+            inline .@"return", .@"break" => |opt_expr| if (opt_expr) |expr| expr.deinit(alloc),
             inline else => |stmt| stmt.deinit(alloc),
         }
     }
@@ -54,10 +55,10 @@ pub const Statement = union(enum) {
         _ = options;
         return switch (value) {
             .let => |stmt| writer.print("let {s} = {};", .{ stmt.name, stmt.value }),
-            .@"return" => |opt_expr| if (opt_expr) |expr|
-                writer.print("return {};", .{expr})
+            inline .@"return", .@"break" => |opt_expr, tag| if (opt_expr) |expr|
+                writer.print("{s} {};", .{ @tagName(tag), expr })
             else
-                writer.writeAll("return;"),
+                writer.print("{s};", .{@tagName(tag)}),
             .expr => |expr| {
                 try writer.print("{}", .{expr});
                 if (std.meta.activeTag(expr) != .block) {
@@ -149,6 +150,9 @@ pub const Expression = union(enum) {
 
         pub fn deinit(self: FnExpr, alloc: Allocator) void {
             var params = self.params;
+            for (0..params.items.len) |i| {
+                alloc.free(params.items[i]);
+            }
             params.deinit(alloc);
             self.body.deinit(alloc);
         }

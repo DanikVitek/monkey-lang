@@ -8,7 +8,9 @@ const ObjectType = @import("object.zig").ObjectType;
 const Integer = @import("object.zig").Integer;
 const Boolean = @import("object.zig").Boolean;
 const Null = @import("object.zig").Null;
+const Function = @import("object.zig").Function;
 const ReturnValue = @import("object.zig").ReturnValue;
+const BreakValue = @import("object.zig").BreakValue;
 const EvalError = @import("object.zig").EvalError;
 
 const Environment = @import("object.zig").Environment;
@@ -21,7 +23,7 @@ pub fn execute(alloc: Allocator, ast: Ast, env: *Environment) !Object {
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result.deinit(alloc);
-        result = try executeStatement(alloc, stmt, env);
+        result = try executeStatement(alloc, stmt, env, false);
         switch (result.objectType()) {
             .return_value => {
                 const ret = result.cast(ReturnValue);
@@ -36,15 +38,23 @@ pub fn execute(alloc: Allocator, ast: Ast, env: *Environment) !Object {
     return result;
 }
 
-fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment) !Object {
+fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment, comptime in_block: bool) !Object {
     return switch (stmt) {
         .expr => |expr| try eval(alloc, expr, env),
         .@"return" => |opt_expr| b: {
+            const obj = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
+            if (obj.isError()) break :b obj;
             const ret = try alloc.create(ReturnValue);
-            errdefer alloc.destroy(ret);
-            ret.value = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
+            ret.value = obj;
             break :b ret.object();
         },
+        .@"break" => |opt_expr| if (in_block) b: {
+            const obj = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
+            if (obj.isError()) break :b obj;
+            const brk = try alloc.create(BreakValue);
+            brk.value = obj;
+            break :b brk.object();
+        } else try newError(alloc, "break statement outside of block"),
         .let => |let| b: {
             const val = try eval(alloc, let.value, env);
             if (val.isError()) return val;
@@ -77,6 +87,13 @@ fn eval(alloc: Allocator, expr: Ast.Expression, env: *const Environment) Error!O
         },
         .@"if" => |conditional| try evalIfExpr(alloc, conditional, env),
         .block => |block| try evalBlockExpr(alloc, block, env),
+        .func => |func| {
+            const obj = try alloc.create(Function);
+            obj.params = func.params.items;
+            obj.body = func.body;
+            obj.env = env;
+            return obj.object();
+        },
         inline else => |_, tag| @panic("Unimplemented (" ++ @tagName(tag) ++ ")"),
     };
 }
@@ -182,7 +199,7 @@ fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *const 
 
 fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const Environment) !Object {
     var block_env = try env.clone(alloc); // TODO: replace by persistent map clone
-    defer {
+    errdefer { // TODO: implement proper garbage collection. If the block_env is passed into a function, created in this block, and then deleted -- use after free may occur at the place of the function's call. So `errdefer` for now
         var block_iter = block_env.store.iterator();
         while (block_iter.next()) |entry| {
             if (env.store.contains(entry.key_ptr.*)) continue;
@@ -195,8 +212,18 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const 
     var result: Object = Object.NULL;
     for (0..program.len) |i| {
         const stmt = program.get(i);
-        result = try executeStatement(alloc, stmt, &block_env);
+        result = try executeStatement(alloc, stmt, &block_env, true);
         if (result.objectType() == .return_value or result.objectType() == .eval_error) break;
+        switch (result.objectType()) {
+            .break_value => {
+                const ret = result.cast(BreakValue);
+                defer alloc.destroy(ret);
+                result = ret.value;
+                break;
+            },
+            .return_value, .eval_error => break,
+            else => {},
+        }
     }
     return result;
 }
@@ -249,8 +276,8 @@ test "eval integer expression" {
     const alloc = arena.allocator();
 
     inline for (cases, 0..) |case, i| {
-        const evaluated = try testEval(case.input, alloc);
-        testIntegerObject(evaluated, case.expected, alloc) catch |err| {
+        const evaluated = try testEval(alloc, case.input);
+        testIntegerObject(alloc, evaluated, case.expected) catch |err| {
             std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
             return err;
         };
@@ -287,8 +314,8 @@ test "eval bool expression" {
     const alloc = arena.allocator();
 
     inline for (cases, 0..) |case, i| {
-        const evaluated = try testEval(case.input, alloc);
-        testBooleanObject(evaluated, case.expected, alloc) catch |err| {
+        const evaluated = try testEval(alloc, case.input);
+        testBooleanObject(alloc, evaluated, case.expected) catch |err| {
             std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
             return err;
         };
@@ -318,17 +345,17 @@ test "eval if/else expression" {
     const alloc = arena.allocator();
 
     inline for (cases, 0..) |case, i| {
-        const evaluated = try testEval(case.input, alloc);
+        const evaluated = try testEval(alloc, case.input);
         switch (comptime case.expected.objectType()) {
-            .integer => testIntegerObject(evaluated, case.expected.cast(Integer).value, alloc) catch |err| {
+            .integer => testIntegerObject(alloc, evaluated, case.expected.cast(Integer).value) catch |err| {
                 std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
                 return err;
             },
-            .eval_error => testErrorObject(evaluated, case.expected.cast(EvalError).message.value(), alloc) catch |err| {
+            .eval_error => testErrorObject(alloc, evaluated, case.expected.cast(EvalError).message.value()) catch |err| {
                 std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
                 return err;
             },
-            .null => testNullObject(evaluated, alloc) catch |err| {
+            .null => testNullObject(alloc, evaluated) catch |err| {
                 std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
                 return err;
             },
@@ -364,16 +391,16 @@ test "eval return statement" {
     const alloc = arena.allocator();
 
     inline for (cases, 0..) |case, i| {
-        const evaluated = try testEval(case.input, alloc);
-        testIntegerObject(evaluated, case.expected, alloc) catch |err| {
+        const evaluated = try testEval(alloc, case.input);
+        testIntegerObject(alloc, evaluated, case.expected) catch |err| {
             std.debug.print("[case {d}] {s}:\n", .{ i, case.input });
             return err;
         };
     }
 
     const bare_return = "9; return; 8;";
-    const evaluated = try testEval(bare_return, alloc);
-    testNullObject(evaluated, alloc) catch |err| {
+    const evaluated = try testEval(alloc, bare_return);
+    testNullObject(alloc, evaluated) catch |err| {
         std.debug.print("[case {d}] \"{s}\":\n", .{ cases.len, bare_return });
         return err;
     };
@@ -438,8 +465,8 @@ test "error handling" {
     const alloc = arena.allocator();
 
     inline for (cases, 0..) |case, i| {
-        const evaluated = try testEval(case.input, alloc);
-        testErrorObject(evaluated, case.expected, alloc) catch |err| {
+        const evaluated = try testEval(alloc, case.input);
+        testErrorObject(alloc, evaluated, case.expected) catch |err| {
             std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
             return err;
         };
@@ -463,15 +490,67 @@ test "eval let statements and bindings" {
     const alloc = arena.allocator();
 
     inline for (cases, 0..) |case, i| {
-        const evaluated = try testEval(case.input, alloc);
-        testIntegerObject(evaluated, case.expected, alloc) catch |err| {
+        const evaluated = try testEval(alloc, case.input);
+        testIntegerObject(alloc, evaluated, case.expected) catch |err| {
             std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
             return err;
         };
     }
 }
 
-fn testIntegerObject(obj: Object, expected: i63, alloc: Allocator) !void {
+test "eval function object" {
+    const input = "fn(x) { x + 2 };";
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const evaluated = try testEval(alloc, input);
+
+    const obj_type = evaluated.objectType();
+    testing.expectEqual(.function, obj_type) catch |err| {
+        std.debug.print("Object is not function. Got .{s} ({s})\n", .{
+            @tagName(obj_type),
+            (try evaluated.inspect(alloc)).value(),
+        });
+        return err;
+    };
+
+    const function: *const Function = evaluated.cast(Function);
+
+    try testing.expectEqual(@as(usize, 1), function.params.len);
+    try testing.expectEqualStrings("x", function.params[0]);
+
+    try testing.expectEqualStrings("{ (x + 2) }", try std.fmt.allocPrint(alloc, "{}", .{function.body}));
+}
+
+test "eval function application" {
+    const cases = comptime [_]struct {
+        input: []const u8,
+        expected: i63,
+    }{
+        .{ .input = "let identity = fn(x) { x }; identity(5);", .expected = 5 },
+        .{ .input = "let identity = fn(x) { return x; }; identity(5);", .expected = 5 },
+        .{ .input = "let double = fn(x) { x * 2 }; double(5);", .expected = 10 },
+        .{ .input = "let add = fn(x, y) { x + y }; add(5, 5);", .expected = 10 },
+        .{ .input = "let add = fn(x, y) { x + y }; add(5 + 5, add(5, 5));", .expected = 20 },
+        .{ .input = "fn(x) { x }(5);", .expected = 5 },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    inline for (cases, 0..) |case, i| {
+        const evaluated = try testEval(alloc, case.input);
+        testIntegerObject(alloc, evaluated, case.expected) catch |err| {
+            std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
+            return err;
+        };
+    }
+}
+
+fn testIntegerObject(alloc: Allocator, obj: Object, expected: i63) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.integer, object_type) catch |err| {
         std.debug.print("Object is not integer. Got .{s} ({s})\n", .{
@@ -484,7 +563,7 @@ fn testIntegerObject(obj: Object, expected: i63, alloc: Allocator) !void {
     try testing.expectEqual(expected, int.value);
 }
 
-fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
+fn testBooleanObject(alloc: Allocator, obj: Object, expected: bool) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.boolean, object_type) catch |err| {
         std.debug.print("Object is not boolean. Got .{s} ({s})\n", .{
@@ -497,7 +576,7 @@ fn testBooleanObject(obj: Object, expected: bool, alloc: Allocator) !void {
     try testing.expectEqual(expected, int.value);
 }
 
-fn testNullObject(obj: Object, alloc: Allocator) !void {
+fn testNullObject(alloc: Allocator, obj: Object) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.null, object_type) catch |err| {
         std.debug.print("Object is not null. Got .{s} ({s})\n", .{
@@ -508,7 +587,7 @@ fn testNullObject(obj: Object, alloc: Allocator) !void {
     };
 }
 
-fn testErrorObject(obj: Object, expected: []const u8, alloc: Allocator) !void {
+fn testErrorObject(alloc: Allocator, obj: Object, expected: []const u8) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.eval_error, object_type) catch |err| {
         std.debug.print("Object is not eval_error. Got .{s} ({s})\n", .{
@@ -524,7 +603,7 @@ fn testErrorObject(obj: Object, expected: []const u8, alloc: Allocator) !void {
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 
-fn testEval(input: []const u8, alloc: Allocator) !Object {
+fn testEval(alloc: Allocator, input: []const u8) !Object {
     var lexer = try Lexer.init(input);
     var parser = Parser.init(&lexer);
     const ast = try parser.parseProgram(alloc);

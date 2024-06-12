@@ -150,6 +150,7 @@ fn fromIdentifier(literal: []const u8) Token {
         .{ "if", .@"if" },
         .{ "else", .@"else" },
         .{ "return", .@"return" },
+        .{ "break", .@"break" },
     });
     return keywords.get(literal) orelse .{ .ident = literal };
 }
@@ -160,6 +161,8 @@ test "next token" {
     const input =
         \\let five = 5;
         \\let ten = 10;
+        \\
+        \\break;
         \\
         \\let add = fn(x, y) {
         \\  x + y
@@ -192,6 +195,8 @@ test "next token" {
         .{ .ident = "ten" },
         .assign,
         .{ .int = "10" },
+        .semicolon,
+        .@"break",
         .semicolon,
         .let,
         .{ .ident = "add" },

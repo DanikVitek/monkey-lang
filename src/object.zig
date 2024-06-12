@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 const trait = @import("lib.zig").trait;
 const String = @import("lib.zig").String;
 
+const BlockExpr = @import("Ast.zig").Expression.BlockExpr;
+
 pub const Object = struct {
     inner: ObjectInner,
     vtable: *const VTable,
@@ -76,6 +78,8 @@ pub const ObjectType = enum {
     integer,
     boolean,
     return_value,
+    break_value,
+    function,
     eval_error,
 
     pub fn isPrimitive(self: ObjectType) bool {
@@ -121,7 +125,7 @@ const ObjectInner = packed union {
 pub const Integer = struct {
     value: i63,
 
-    pub const object_type: ObjectType = ObjectType.integer;
+    pub const object_type: ObjectType = .integer;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
         const value: i63 = ctx.asInt();
@@ -149,7 +153,7 @@ pub const Integer = struct {
 pub const Boolean = struct {
     value: bool,
 
-    pub const object_type: ObjectType = ObjectType.boolean;
+    pub const object_type: ObjectType = .boolean;
 
     pub fn inspect(ctx: ObjectInner, _: Allocator) !String {
         const value: bool = ctx.asBool();
@@ -175,7 +179,7 @@ pub const Boolean = struct {
 };
 
 pub const Null = struct {
-    pub const object_type: ObjectType = ObjectType.null;
+    pub const object_type: ObjectType = .null;
 
     pub fn inspect(_: ObjectInner, _: Allocator) !String {
         return .{ .borrowed = "null" };
@@ -197,10 +201,42 @@ pub const Null = struct {
     }
 };
 
+pub const Function = struct {
+    params: []const []const u8,
+    body: BlockExpr,
+    env: *const Environment,
+
+    pub const object_type: ObjectType = .function;
+
+    pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
+        const func: *const Function = @ptrCast(@alignCast(ctx.asPtr()));
+        return .{ .owned = try std.fmt.allocPrint(
+            alloc,
+            std.fmt.comptimePrint("<function${{x:0>{d}}}/{{d}}>", .{@sizeOf(@TypeOf(func)) * 2}),
+            .{ @intFromPtr(func), func.params.len },
+        ) };
+    }
+
+    pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
+        return lhs.asPtr() == rhs.asPtr();
+    }
+
+    pub fn object(self: *const Function) Object {
+        return .{
+            .inner = .{ .ptr = self },
+            .vtable = &.{
+                .inspectFn = inspect,
+                .eqlFn = eql,
+                .object_type = object_type,
+            },
+        };
+    }
+};
+
 pub const ReturnValue = struct {
     value: Object,
 
-    pub const object_type: ObjectType = ObjectType.return_value;
+    pub const object_type: ObjectType = .return_value;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
         const ret: *const ReturnValue = @ptrCast(@alignCast(ctx.asPtr()));
@@ -225,14 +261,46 @@ pub const ReturnValue = struct {
     }
 };
 
+pub const BreakValue = struct {
+    value: Object,
+
+    pub const object_type: ObjectType = .break_value;
+
+    pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
+        const ret: *const BreakValue = @ptrCast(@alignCast(ctx.asPtr()));
+        return try ret.value.inspect(alloc);
+    }
+
+    pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
+        const lhs_ret: *const BreakValue = @ptrCast(@alignCast(lhs.asPtr()));
+        const rhs_ret: *const BreakValue = @ptrCast(@alignCast(rhs.asPtr()));
+        return lhs_ret.value.eql(rhs_ret.value);
+    }
+
+    pub fn object(self: *const BreakValue) Object {
+        return .{
+            .inner = .{ .ptr = self },
+            .vtable = &.{
+                .inspectFn = inspect,
+                .eqlFn = eql,
+                .object_type = object_type,
+            },
+        };
+    }
+};
+
 pub const EvalError = struct {
     message: String,
 
-    pub const object_type: ObjectType = ObjectType.eval_error;
+    pub const object_type: ObjectType = .eval_error;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
         const err: *const EvalError = @ptrCast(@alignCast(ctx.asPtr()));
-        return .{ .owned = try std.fmt.allocPrint(alloc, "Error: {s}", .{err.message.value()}) };
+        return .{ .owned = try std.fmt.allocPrint(
+            alloc,
+            "Error: {s}",
+            .{err.message.value()},
+        ) };
     }
 
     pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {

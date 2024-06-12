@@ -53,6 +53,7 @@ fn parseStmt(self: *Parser, alloc: Allocator) !?Statement {
     return switch (self.curr_token orelse return null) {
         .let => try self.parseLetStmt(alloc),
         .@"return" => try self.parseReturnStmt(alloc),
+        .@"break" => try self.parseBreakStmt(alloc),
         else => try self.parseExprStmt(alloc),
     };
 }
@@ -87,6 +88,20 @@ fn parseReturnStmt(self: *Parser, alloc: Allocator) !Statement {
     try self.expectPeekAdvance(.semicolon, error.ExpectedSemicolon);
 
     return Statement{ .@"return" = expr };
+}
+
+fn parseBreakStmt(self: *Parser, alloc: Allocator) !Statement {
+    std.debug.assert(self.curr_token.? == .@"break");
+
+    const expr: ?Expression = if (!self.peekTokenIs(.semicolon)) b: {
+        self.advanceTokens();
+        break :b try PrattParser.parseExpr(alloc, self, .lowest);
+    } else null;
+    errdefer if (expr) |e| e.deinit(alloc);
+
+    try self.expectPeekAdvance(.semicolon, error.ExpectedSemicolon);
+
+    return Statement{ .@"break" = expr };
 }
 
 fn parseExprStmt(self: *Parser, alloc: Allocator) !Statement {
@@ -184,7 +199,7 @@ const PrattParser = struct {
                     p.advanceTokens();
                     break :b Expression.unit;
                 }
-                break :b .{ .block = try parseBlockExpr(alloc, p) };
+                break :b .{ .block = try parseBlockExpr(alloc, p, .block_expr) };
             },
             .@"if" => parseIfExpr(alloc, p),
             .func => parseFuncExpr(alloc, p),
@@ -282,7 +297,7 @@ const PrattParser = struct {
         try p.expectPeekAdvance(.rparen, error.ExpectedRParen);
         try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
-        const conseq = try parseBlockExpr(alloc, p);
+        const conseq = try parseBlockExpr(alloc, p, .block_expr);
         errdefer conseq.deinit(alloc);
 
         const alt: ?BlockExpr = if (p.peekTokenIs(.@"else")) b: {
@@ -290,7 +305,7 @@ const PrattParser = struct {
 
             try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
-            break :b try parseBlockExpr(alloc, p);
+            break :b try parseBlockExpr(alloc, p, .block_expr);
         } else null;
 
         const boxed_cond = try alloc.create(Expression);
@@ -303,7 +318,7 @@ const PrattParser = struct {
         } };
     }
 
-    fn parseBlockExpr(alloc: Allocator, p: *Parser) !BlockExpr {
+    fn parseBlockExpr(alloc: Allocator, p: *Parser, comptime kind: enum { function_body, block_expr }) !BlockExpr {
         std.debug.assert(p.curr_token.? == .lbrace);
 
         var program: MultiArrayList(Statement) = .{};
@@ -336,9 +351,13 @@ const PrattParser = struct {
             p.* = prev_parser;
 
             const expr = try parseExpr(alloc, p, .lowest);
-            try program.append(alloc, .{ .expr = expr });
+            errdefer expr.deinit(alloc);
 
             try p.expectPeekAdvance(.rbrace, error.ExpectedRBrace);
+            try program.append(alloc, .{ .expr = expr });
+        } else switch (kind) {
+            .function_body => try program.append(alloc, .{ .@"return" = null }),
+            .block_expr => try program.append(alloc, .{ .@"break" = null }),
         }
 
         if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;
@@ -356,14 +375,19 @@ const PrattParser = struct {
 
         try p.expectPeekAdvance(.lbrace, error.ExpectedLBrace);
 
-        const body = try parseBlockExpr(alloc, p);
+        const body = try parseBlockExpr(alloc, p, .function_body);
 
         return Expression{ .func = .{ .params = params, .body = body } };
     }
 
     fn parseFuncParams(alloc: Allocator, p: *Parser) !ArrayList([]const u8) {
-        var params = ArrayList([]const u8){};
-        errdefer params.deinit(alloc);
+        var params: ArrayList([]const u8) = .{};
+        errdefer {
+            for (0..params.items.len) |i| {
+                alloc.free(params.items[i]);
+            }
+            params.deinit(alloc);
+        }
 
         if (p.peekTokenIs(.rparen)) {
             p.advanceTokens();
@@ -373,14 +397,14 @@ const PrattParser = struct {
         p.advanceTokens();
 
         if (p.currTokenIs(.ident)) {
-            try params.append(alloc, p.curr_token.?.ident);
+            try params.append(alloc, try alloc.dupe(u8, p.curr_token.?.ident));
         } else return error.ExpectedIdent;
 
         while (p.peekTokenIs(.comma)) {
             p.advanceTokens();
             p.advanceTokens();
             switch (p.curr_token orelse return error.UnexpectedEof) {
-                .ident => |name| try params.append(alloc, name),
+                .ident => |name| try params.append(alloc, try alloc.dupe(u8, name)),
                 .rparen => return params,
                 else => return error.ExpectedIdent,
             }
