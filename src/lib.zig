@@ -24,3 +24,20 @@ pub fn MaybeOwnedSlice(comptime T: type, comptime sentinel: ?T) type {
 }
 
 pub const String = MaybeOwnedSlice(u8, null);
+
+pub const MaybeSmallString = packed union {
+    small: SmallString,
+    large: LargeString,
+
+    const SmallString = extern struct {
+        len: std.math.IntFittingRange(0, max_size) align(1),
+        data: [max_size]u8,
+
+        pub const max_size = @sizeOf(LargeString) - 1;
+    };
+
+    const LargeString = extern struct {
+        data: [*]const u8,
+        len: usize,
+    };
+};
