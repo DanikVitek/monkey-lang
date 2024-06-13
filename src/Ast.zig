@@ -5,6 +5,8 @@ const Allocator = std.mem.Allocator;
 
 const Token = @import("token.zig").Token;
 
+const Int = @import("object.zig").Int;
+
 program: MultiArrayList(Statement),
 
 const Ast = @This();
@@ -50,10 +52,10 @@ pub const Statement = union(enum) {
         }
     }
 
-    pub fn format(value: Statement, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: Statement, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = fmt;
         _ = options;
-        return switch (value) {
+        return switch (self) {
             .let => |stmt| writer.print("let {s} = {};", .{ stmt.name, stmt.value }),
             inline .@"return", .@"break" => |opt_expr, tag| if (opt_expr) |expr|
                 writer.print("{s} {};", .{ @tagName(tag), expr })
@@ -61,10 +63,20 @@ pub const Statement = union(enum) {
                 writer.print("{s};", .{@tagName(tag)}),
             .expr => |expr| {
                 try writer.print("{}", .{expr});
-                if (std.meta.activeTag(expr) != .block) {
+                if (self.endsWithSemicolon()) {
                     try writer.writeByte(';');
                 }
             },
+        };
+    }
+
+    pub fn endsWithSemicolon(self: *const Statement) bool {
+        return switch (self.*) {
+            .expr => |expr| switch (std.meta.activeTag(expr)) {
+                .block, .@"if" => false,
+                else => true,
+            },
+            else => true,
         };
     }
 };
@@ -72,7 +84,7 @@ pub const Statement = union(enum) {
 pub const Expression = union(enum) {
     unit: void,
     ident: []const u8,
-    int: i63,
+    int: Int,
     bool: bool,
     unary_op: UnaryOpExpr,
     binary_op: BinaryOpExpr,

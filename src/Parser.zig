@@ -13,6 +13,8 @@ const UnaryOp = Expression.UnaryOp;
 const IfExpr = Expression.IfExpr;
 const BlockExpr = Expression.BlockExpr;
 
+const Int = @import("object.zig").Int;
+
 lexer: *Lexer,
 curr_token: ?Token = null,
 peek_token: ?Token = null,
@@ -38,7 +40,7 @@ pub fn parseProgram(self: *Parser, alloc: Allocator) !Ast {
     var program = MultiArrayList(Ast.Statement){};
     errdefer (Ast{ .program = program }).deinit(alloc);
 
-    while (try self.parseStmt(alloc)) |statement| : (self.advanceTokens()) {
+    while (try self.parseStmt(alloc, false)) |statement| : (self.advanceTokens()) {
         errdefer statement.deinit(alloc);
         try program.append(alloc, statement);
     }
@@ -46,14 +48,14 @@ pub fn parseProgram(self: *Parser, alloc: Allocator) !Ast {
     return Ast{ .program = program };
 }
 
-fn parseStmt(self: *Parser, alloc: Allocator) !?Statement {
+fn parseStmt(self: *Parser, alloc: Allocator, comptime in_block: bool) !?Statement {
     while (self.currTokenIs(.semicolon)) {
         self.advanceTokens();
     }
     return switch (self.curr_token orelse return null) {
         .let => try self.parseLetStmt(alloc),
         .@"return" => try self.parseReturnStmt(alloc),
-        .@"break" => try self.parseBreakStmt(alloc),
+        .@"break" => if (in_block) try self.parseBreakStmt(alloc) else return error.UnexpectedBreak,
         else => try self.parseExprStmt(alloc),
     };
 }
@@ -158,6 +160,7 @@ const PrattParser = struct {
     pub const ParseExprError = error{
         UnexpectedEof,
         UnexpectedToken,
+        UnexpectedBreak,
         Unimplemented,
         ExpectedLParen,
         ExpectedRParen,
@@ -223,7 +226,7 @@ const PrattParser = struct {
     }
 
     inline fn parseInt(p: *const Parser) !Expression {
-        return Expression{ .int = try std.fmt.parseInt(i63, p.curr_token.?.int, 10) };
+        return Expression{ .int = try std.fmt.parseInt(Int, p.curr_token.?.int, 10) };
     }
 
     fn parsePrefixExpr(alloc: Allocator, p: *Parser) !Expression {
@@ -329,16 +332,22 @@ const PrattParser = struct {
         var prev_parser = p.*;
         var prev_lexer = prev_parser.lexer.*;
 
-        var not_stmt = false;
+        const State = enum { stmt_semicolon, stmt_no_semicolon, not_stmt };
+        var state: State = .stmt_semicolon;
         while (p.curr_token != null and !p.currTokenIs(.rbrace)) {
-            if (p.parseStmt(alloc) catch |err| switch (err) {
+            if (p.parseStmt(alloc, kind == .block_expr) catch |err| switch (err) {
                 error.ExpectedSemicolon => {
-                    not_stmt = true;
+                    state = .not_stmt;
                     break;
                 },
                 else => return err,
             }) |stmt| {
                 errdefer stmt.deinit(alloc);
+
+                state = if (stmt.endsWithSemicolon() or p.currTokenIs(.semicolon))
+                    .stmt_semicolon
+                else
+                    .stmt_no_semicolon;
                 try program.append(alloc, stmt);
             }
             p.advanceTokens();
@@ -346,18 +355,22 @@ const PrattParser = struct {
             prev_lexer = prev_parser.lexer.*;
         }
 
-        if (not_stmt) {
+        if (state == .not_stmt) {
             prev_parser.lexer.* = prev_lexer;
             p.* = prev_parser;
 
             const expr = try parseExpr(alloc, p, .lowest);
             errdefer expr.deinit(alloc);
+            // std.debug.print("not statement ({})\n", .{expr});
 
             try p.expectPeekAdvance(.rbrace, error.ExpectedRBrace);
             try program.append(alloc, .{ .expr = expr });
-        } else switch (kind) {
-            .function_body => try program.append(alloc, .{ .@"return" = null }),
-            .block_expr => try program.append(alloc, .{ .@"break" = null }),
+        } else {
+            // std.debug.print("statement ({})\n", .{program.get(program.len - 1)});
+            if (state == .stmt_semicolon) switch (kind) {
+                .function_body => try program.append(alloc, .{ .@"return" = null }),
+                .block_expr => try program.append(alloc, .{ .@"break" = null }),
+            };
         }
 
         if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;

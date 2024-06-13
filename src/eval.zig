@@ -15,6 +15,7 @@ const EvalError = @import("object.zig").EvalError;
 
 const Environment = @import("object.zig").Environment;
 
+const Int = @import("object.zig").Int;
 const String = @import("lib.zig").String;
 
 pub fn execute(alloc: Allocator, ast: Ast, env: *Environment) !Object {
@@ -23,7 +24,7 @@ pub fn execute(alloc: Allocator, ast: Ast, env: *Environment) !Object {
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result.deinit(alloc);
-        result = try executeStatement(alloc, stmt, env, false);
+        result = try executeStatement(alloc, stmt, env);
         switch (result.objectType()) {
             .return_value => {
                 const ret = result.cast(ReturnValue);
@@ -38,7 +39,7 @@ pub fn execute(alloc: Allocator, ast: Ast, env: *Environment) !Object {
     return result;
 }
 
-fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment, comptime in_block: bool) !Object {
+fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment) !Object {
     return switch (stmt) {
         .expr => |expr| try eval(alloc, expr, env),
         .@"return" => |opt_expr| b: {
@@ -48,18 +49,18 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment, co
             ret.value = obj;
             break :b ret.object();
         },
-        .@"break" => |opt_expr| if (in_block) b: {
+        .@"break" => |opt_expr| b: {
             const obj = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
             if (obj.isError()) break :b obj;
             const brk = try alloc.create(BreakValue);
             brk.value = obj;
             break :b brk.object();
-        } else try newError(alloc, "break statement outside of block"),
+        },
         .let => |let| b: {
-            const val = try eval(alloc, let.value, env);
-            if (val.isError()) return val;
+            const obj = try eval(alloc, let.value, env);
+            if (obj.isError()) return obj;
 
-            try env.set(alloc, let.name, val);
+            try env.set(alloc, let.name, obj);
 
             break :b Object.NULL;
         },
@@ -93,6 +94,28 @@ fn eval(alloc: Allocator, expr: Ast.Expression, env: *const Environment) Error!O
             obj.body = func.body;
             obj.env = env;
             return obj.object();
+        },
+        .call => |call| b: {
+            const obj = try eval(alloc, call.callee.*, env);
+            if (obj.isError()) break :b obj;
+
+            if (!obj.isFunction()) break :b try newErrorFmt(alloc, "not a function: {}", .{call.callee});
+            const func: *const Function = obj.cast(Function);
+
+            const args = try evalArgs(alloc, &call.args, env);
+            defer alloc.free(args);
+
+            if (args.len == 1 and args[0].isError()) break :b args[0];
+
+            if (args.len != func.params.len) {
+                break :b try newErrorFmt(
+                    alloc,
+                    "wrong number of arguments: expected {d}, got {d}",
+                    .{ func.params.len, args.len },
+                );
+            }
+
+            break :b try evalFunctionCall(alloc, func, args);
         },
         inline else => |_, tag| @panic("Unimplemented (" ++ @tagName(tag) ++ ")"),
     };
@@ -198,11 +221,10 @@ fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *const 
 }
 
 fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const Environment) !Object {
-    var block_env = try env.clone(alloc); // TODO: replace by persistent map clone
+    var block_env = env.inherit();
     errdefer { // TODO: implement proper garbage collection. If the block_env is passed into a function, created in this block, and then deleted -- use after free may occur at the place of the function's call. So `errdefer` for now
         var block_iter = block_env.store.iterator();
         while (block_iter.next()) |entry| {
-            if (env.store.contains(entry.key_ptr.*)) continue;
             entry.value_ptr.deinit(alloc);
         }
         block_env.store.deinit(alloc);
@@ -212,7 +234,7 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const 
     var result: Object = Object.NULL;
     for (0..program.len) |i| {
         const stmt = program.get(i);
-        result = try executeStatement(alloc, stmt, &block_env, true);
+        result = try executeStatement(alloc, stmt, &block_env);
         if (result.objectType() == .return_value or result.objectType() == .eval_error) break;
         switch (result.objectType()) {
             .break_value => {
@@ -228,8 +250,44 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const 
     return result;
 }
 
+fn evalFunctionCall(alloc: Allocator, func: *const Function, args: []const Object) !Object {
+    var call_env = try func.env.inheritEnsureUnusedCapacity(alloc, args.len);
+
+    for (0..args.len) |i| {
+        try call_env.set(alloc, func.params[i], args[i]);
+    }
+
+    const obj = try evalBlockExpr(alloc, func.body, &call_env);
+    std.debug.assert(obj.objectType() != .break_value);
+    if (obj.objectType() == .return_value) {
+        const ret = obj.cast(ReturnValue);
+        defer alloc.destroy(ret);
+        return ret.value;
+    }
+    return obj;
+}
+
 inline fn nativeBoolToBooleanObject(value: bool) Object {
     return if (value) Object.TRUE else Object.FALSE;
+}
+
+/// caller owns returned memory
+fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: *const Environment) ![]const Object {
+    var result = try std.ArrayList(Object).initCapacity(alloc, args.len);
+    errdefer result.deinit();
+
+    const slice = args.slice();
+    for (0..slice.len) |i| {
+        const obj = try eval(alloc, slice.get(i), env);
+        if (obj.isError()) {
+            result.clearRetainingCapacity();
+            result.appendAssumeCapacity(obj);
+            return try result.toOwnedSlice();
+        }
+        result.appendAssumeCapacity(obj);
+    }
+
+    return try result.toOwnedSlice();
 }
 
 fn newErrorFmt(alloc: Allocator, comptime fmt: []const u8, args: anytype) !Object {
@@ -250,7 +308,7 @@ const testing = std.testing;
 test "eval integer expression" {
     const cases = [_]struct {
         input: []const u8,
-        expected: i63,
+        expected: Int,
     }{
         .{ .input = "5;", .expected = 5 },
         .{ .input = "10;", .expected = 10 },
@@ -338,6 +396,15 @@ test "eval if/else expression" {
         .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = (Integer{ .value = 20 }).object() },
         .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = (Integer{ .value = 10 }).object() },
         .{ .input = "if (1 < 2) { return; 10 } else { 20 }; 5;", .expected = Object.NULL },
+        .{
+            .input =
+            \\let max = fn(a, b) {
+            \\    if (a > b) { a } else { b };
+            \\};
+            \\max(20, 10);
+            ,
+            .expected = Object.NULL,
+        },
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -367,7 +434,7 @@ test "eval if/else expression" {
 test "eval return statement" {
     const cases = comptime [_]struct {
         input: []const u8,
-        expected: i63,
+        expected: Int,
     }{
         .{ .input = "return 10;", .expected = 10 },
         .{ .input = "return 10; 9;", .expected = 10 },
@@ -458,6 +525,14 @@ test "error handling" {
             .input = "{ let foobar = 10; } foobar;",
             .expected = "identifier not found: foobar",
         },
+        // .{
+        //     .input =
+        //     \\let a = fn() { b };
+        //     \\let b = 0;
+        //     \\a();
+        //     ,
+        //     .expected = "identifier not found: b",
+        // },
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -476,7 +551,7 @@ test "error handling" {
 test "eval let statements and bindings" {
     const cases = comptime [_]struct {
         input: []const u8,
-        expected: i63,
+        expected: Int,
     }{
         .{ .input = "let a = 5; a;", .expected = 5 },
         .{ .input = "let a = 5 * 5; a;", .expected = 25 },
@@ -527,7 +602,7 @@ test "eval function object" {
 test "eval function application" {
     const cases = comptime [_]struct {
         input: []const u8,
-        expected: i63,
+        expected: Int,
     }{
         .{ .input = "let identity = fn(x) { x }; identity(5);", .expected = 5 },
         .{ .input = "let identity = fn(x) { return x; }; identity(5);", .expected = 5 },
@@ -535,6 +610,34 @@ test "eval function application" {
         .{ .input = "let add = fn(x, y) { x + y }; add(5, 5);", .expected = 10 },
         .{ .input = "let add = fn(x, y) { x + y }; add(5 + 5, add(5, 5));", .expected = 20 },
         .{ .input = "fn(x) { x }(5);", .expected = 5 },
+        .{
+            .input =
+            \\let max = fn(a, b) {
+            \\    if (a > b) { a } else { b }
+            \\};
+            \\max(10, 20);
+            ,
+            .expected = 20,
+        },
+        .{
+            .input =
+            \\let max = fn(a, b) {
+            \\    if (a > b) { a } else { b }
+            \\};
+            \\max(20, 10);
+            ,
+            .expected = 20,
+        },
+        .{
+            .input =
+            \\let max = fn(a, b) {
+            \\    if (a > b) { a } else { b }
+            \\    10
+            \\};
+            \\max(20, 10);
+            ,
+            .expected = 10,
+        },
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -550,10 +653,10 @@ test "eval function application" {
     }
 }
 
-fn testIntegerObject(alloc: Allocator, obj: Object, expected: i63) !void {
+fn testIntegerObject(alloc: Allocator, obj: Object, expected: Int) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.integer, object_type) catch |err| {
-        std.debug.print("Object is not integer. Got .{s} ({s})\n", .{
+        std.debug.print("Object is not integer. Got {s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
@@ -566,7 +669,7 @@ fn testIntegerObject(alloc: Allocator, obj: Object, expected: i63) !void {
 fn testBooleanObject(alloc: Allocator, obj: Object, expected: bool) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.boolean, object_type) catch |err| {
-        std.debug.print("Object is not boolean. Got .{s} ({s})\n", .{
+        std.debug.print("Object is not boolean. Got {s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
@@ -579,7 +682,7 @@ fn testBooleanObject(alloc: Allocator, obj: Object, expected: bool) !void {
 fn testNullObject(alloc: Allocator, obj: Object) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.null, object_type) catch |err| {
-        std.debug.print("Object is not null. Got .{s} ({s})\n", .{
+        std.debug.print("Object is not null. Got {s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
@@ -590,7 +693,7 @@ fn testNullObject(alloc: Allocator, obj: Object) !void {
 fn testErrorObject(alloc: Allocator, obj: Object, expected: []const u8) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.eval_error, object_type) catch |err| {
-        std.debug.print("Object is not eval_error. Got .{s} ({s})\n", .{
+        std.debug.print("Object is not eval_error. Got {s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
@@ -607,6 +710,7 @@ fn testEval(alloc: Allocator, input: []const u8) !Object {
     var lexer = try Lexer.init(input);
     var parser = Parser.init(&lexer);
     const ast = try parser.parseProgram(alloc);
+    // std.debug.print("{}\n", .{ast});
 
     var env = Environment{};
 

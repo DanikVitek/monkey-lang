@@ -14,8 +14,5 @@ pub fn main() !void {
 }
 
 test {
-    _ = @import("token.zig");
-    _ = @import("Lexer.zig");
-    _ = @import("Parser.zig");
-    _ = @import("eval.zig");
+    std.testing.refAllDeclsRecursive(@This());
 }

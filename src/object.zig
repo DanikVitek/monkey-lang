@@ -36,6 +36,10 @@ pub const Object = struct {
         return self.objectType() == ObjectType.eval_error;
     }
 
+    pub inline fn isFunction(self: Object) bool {
+        return self.objectType() == ObjectType.function;
+    }
+
     pub inline fn cast(self: Object, comptime T: type) CastType(T) {
         std.debug.assert(self.objectType() == T.object_type);
         return if (T == Integer)
@@ -91,13 +95,13 @@ pub const ObjectType = enum {
 };
 
 const ObjectInner = packed union {
-    int: packed struct {
+    int: packed struct(usize) {
         tag: u1 = 1,
-        value: i63,
+        value: Int,
     },
-    bool: packed struct {
+    bool: packed struct(usize) {
         tag: u1 = 1,
-        _: u62 = 0,
+        _: std.meta.Int(.unsigned, @typeInfo(usize).Int.bits - 2) = 0,
         value: bool,
     },
     ptr: *const anyopaque,
@@ -106,7 +110,7 @@ const ObjectInner = packed union {
         return self.int.tag != 1;
     }
 
-    fn asInt(self: ObjectInner) i63 {
+    fn asInt(self: ObjectInner) Int {
         std.debug.assert(!self.isPointer());
         return self.int.value;
     }
@@ -122,20 +126,21 @@ const ObjectInner = packed union {
     }
 };
 
+/// The unboxed integer type used in the language.
+pub const Int: type = std.meta.Int(.signed, @typeInfo(usize).Int.bits - 1);
+
 pub const Integer = struct {
-    value: i63,
+    value: Int,
 
     pub const object_type: ObjectType = .integer;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
-        const value: i63 = ctx.asInt();
+        const value: Int = ctx.asInt();
         return .{ .owned = try std.fmt.allocPrint(alloc, "{d}", .{value}) };
     }
 
     pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
-        const lhs_int: i63 = lhs.asInt();
-        const rhs_int: i63 = rhs.asInt();
-        return lhs_int == rhs_int;
+        return lhs.asInt() == rhs.asInt();
     }
 
     pub fn object(self: Integer) Object {
@@ -322,18 +327,33 @@ pub const EvalError = struct {
 };
 
 pub const Environment = struct {
-    store: std.StringHashMapUnmanaged(Object) = .{},
+    parent: ?*const Environment = null,
+    store: std.StringArrayHashMapUnmanaged(Object) = .{},
 
-    pub fn get(self: *const Environment, name: []const u8) ?Object {
-        return self.store.get(name);
+    pub fn get(
+        self: *const Environment,
+        name: []const u8,
+        // func_idx: ?usize,
+    ) ?Object {
+        return self.store.get(name) orelse if (self.parent) |parent| parent.get(name) else null;
     }
 
     pub fn set(self: *Environment, alloc: Allocator, name: []const u8, value: Object) Allocator.Error!void {
         try self.store.put(alloc, name, value);
     }
 
-    pub fn clone(self: *const Environment, alloc: Allocator) Allocator.Error!Environment {
-        return Environment{ .store = try self.store.clone(alloc) };
+    pub fn inherit(self: *const Environment) Environment {
+        return Environment{ .parent = self, .store = .{} };
+    }
+
+    pub fn inheritEnsureUnusedCapacity(self: *const Environment, alloc: Allocator, capacity: usize) Allocator.Error!Environment {
+        var cloned = self.inherit();
+        try cloned.store.ensureTotalCapacity(alloc, capacity);
+        return cloned;
+    }
+
+    pub fn ensureUnusedCapacity(self: *Environment, alloc: Allocator, capacity: usize) Allocator.Error!void {
+        try self.store.ensureTotalCapacity(alloc, capacity);
     }
 
     pub fn deinit(self: Environment, alloc: Allocator) void {
@@ -343,5 +363,55 @@ pub const Environment = struct {
         }
 
         self.store.deinit(alloc);
+    }
+
+    pub fn iterator(self: *const Environment) Iterator {
+        return Iterator{
+            .parent_env = self.parent,
+            .store_iter = self.store.iterator(),
+        };
+    }
+
+    pub const Iterator = struct {
+        parent_env: ?*const Environment,
+        store_iter: std.StringArrayHashMapUnmanaged(Object).Iterator,
+
+        pub fn next(self: *Iterator) ?Object {
+            return if (self.store_iter.next()) |entry|
+                entry.value_ptr.*
+            else if (self.parent_env) |parent_env| b: {
+                self.store_iter = parent_env.store.iterator();
+                self.parent_env = parent_env.parent;
+                break :b self.next();
+            } else null;
+        }
+    };
+
+    test Iterator {
+        const testing = std.testing;
+
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var env = Environment{};
+        try env.set(alloc, "a", Object.TRUE);
+        try env.set(alloc, "b", Object.FALSE);
+
+        var child_env = try env.inheritEnsureUnusedCapacity(alloc, 1);
+        try child_env.set(alloc, "c", Object.NULL);
+
+        var iter = env.iterator();
+
+        try testing.expect(iter.next().?.eql(Object.TRUE));
+        try testing.expect(iter.next().?.eql(Object.FALSE));
+        try testing.expect(iter.next() == null);
+
+        var child_iter = child_env.iterator();
+
+        try testing.expect(child_iter.next().?.eql(Object.NULL));
+        try testing.expect(child_iter.next().?.eql(Object.TRUE));
+        try testing.expect(child_iter.next().?.eql(Object.FALSE));
+        try testing.expect(child_iter.next() == null);
     }
 };
