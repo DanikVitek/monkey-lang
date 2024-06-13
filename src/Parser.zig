@@ -321,7 +321,7 @@ const PrattParser = struct {
         } };
     }
 
-    fn parseBlockExpr(alloc: Allocator, p: *Parser, comptime kind: enum { function_body, block_expr }) !BlockExpr {
+    fn parseBlockExpr(alloc: Allocator, p: *Parser, comptime block_kind: enum { function_body, block_expr }) !BlockExpr {
         std.debug.assert(p.curr_token.? == .lbrace);
 
         var program: MultiArrayList(Statement) = .{};
@@ -332,19 +332,19 @@ const PrattParser = struct {
         var prev_parser = p.*;
         var prev_lexer = prev_parser.lexer.*;
 
-        const State = enum { stmt_semicolon, stmt_no_semicolon, not_stmt };
-        var state: State = .stmt_semicolon;
+        const StatementKind = enum { stmt_semicolon, stmt_no_semicolon, not_stmt };
+        var last_stmt_kind: StatementKind = .stmt_semicolon;
         while (p.curr_token != null and !p.currTokenIs(.rbrace)) {
-            if (p.parseStmt(alloc, kind == .block_expr) catch |err| switch (err) {
+            if (p.parseStmt(alloc, block_kind == .block_expr) catch |err| switch (err) {
                 error.ExpectedSemicolon => {
-                    state = .not_stmt;
+                    last_stmt_kind = .not_stmt;
                     break;
                 },
                 else => return err,
             }) |stmt| {
                 errdefer stmt.deinit(alloc);
 
-                state = if (stmt.endsWithSemicolon() or p.currTokenIs(.semicolon))
+                last_stmt_kind = if (stmt.endsWithSemicolon() or p.currTokenIs(.semicolon))
                     .stmt_semicolon
                 else
                     .stmt_no_semicolon;
@@ -355,22 +355,22 @@ const PrattParser = struct {
             prev_lexer = prev_parser.lexer.*;
         }
 
-        if (state == .not_stmt) {
-            prev_parser.lexer.* = prev_lexer;
-            p.* = prev_parser;
+        switch (last_stmt_kind) {
+            .not_stmt => {
+                prev_parser.lexer.* = prev_lexer;
+                p.* = prev_parser;
 
-            const expr = try parseExpr(alloc, p, .lowest);
-            errdefer expr.deinit(alloc);
-            // std.debug.print("not statement ({})\n", .{expr});
+                const expr = try parseExpr(alloc, p, .lowest);
+                errdefer expr.deinit(alloc);
 
-            try p.expectPeekAdvance(.rbrace, error.ExpectedRBrace);
-            try program.append(alloc, .{ .expr = expr });
-        } else {
-            // std.debug.print("statement ({})\n", .{program.get(program.len - 1)});
-            if (state == .stmt_semicolon) switch (kind) {
+                try p.expectPeekAdvance(.rbrace, error.ExpectedRBrace);
+                try program.append(alloc, .{ .expr = expr });
+            },
+            .stmt_semicolon => switch (block_kind) {
                 .function_body => try program.append(alloc, .{ .@"return" = null }),
                 .block_expr => try program.append(alloc, .{ .@"break" = null }),
-            };
+            },
+            .stmt_no_semicolon => {},
         }
 
         if (!p.currTokenIs(.rbrace)) return error.ExpectedRBrace;
