@@ -71,11 +71,11 @@ pub const Token = union(enum) {
     /// `break`
     @"break",
 
-    pub fn format(value: Token, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: Token, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         _ = options;
-        return if (std.mem.eql(u8, "s", fmt)) switch (value) {
-            .illegal => |lit| std.fmt.format(writer, ".{{ .illegal = {s} }}", .{lit}),
-            inline .ident, .int => |lit| std.fmt.format(writer, "{s}", .{lit}),
+        return if (std.mem.eql(u8, "s", fmt)) switch (self) {
+            .illegal => |lit| writer.print(".{{ .illegal = {s} }}", .{lit}),
+            inline .ident, .int => |lit| writer.print("{s}", .{lit}),
             .assign => writer.writeByte('='),
             .plus => writer.writeByte('+'),
             .minus => writer.writeByte('-'),
@@ -97,7 +97,7 @@ pub const Token = union(enum) {
             .neq => writer.writeAll("!="),
             .func => writer.writeAll("fn"),
             inline .let, .true, .false, .@"if", .@"else", .@"return", .@"break" => |_, tag| writer.writeAll(@tagName(tag)),
-        } else switch (value) {
+        } else switch (self) {
             inline .illegal, .ident, .int => |lit, tag| std.fmt.format(
                 writer,
                 ".{{ ." ++ @tagName(tag) ++ " = {s} }}",

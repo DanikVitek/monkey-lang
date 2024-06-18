@@ -21,7 +21,7 @@ pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
     var line_start: usize = 0;
     var line_end: usize = 0;
 
-    var env = Environment{};
+    var env = try Environment.init(alloc);
 
     while (true) {
         try err.writeAll(PROMPT);

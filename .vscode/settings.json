@@ -3,8 +3,10 @@
         "cond",
         "conseq",
         "curr",
+        "HAMT",
         "lparen",
         "rparen",
+        "signedness",
         "stmts",
         "Trunc",
         "usingnamespace"

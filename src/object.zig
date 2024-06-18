@@ -6,6 +6,8 @@ const String = @import("lib.zig").String;
 
 const BlockExpr = @import("Ast.zig").Expression.BlockExpr;
 
+const StringHAMT = @import("im/hamt.zig").StringHashArrayMappedTrie;
+
 pub const Object = struct {
     inner: ObjectInner,
     vtable: *const VTable,
@@ -328,22 +330,31 @@ pub const EvalError = struct {
 
 pub const Environment = struct {
     parent: ?*const Environment = null,
-    store: std.StringArrayHashMapUnmanaged(Object) = .{},
+    store: StringHAMT(Object),
+
+    pub fn init(alloc: Allocator) !Environment {
+        return .{
+            .store = try StringHAMT(Object).init(alloc),
+        };
+    }
 
     pub fn get(
         self: *const Environment,
         name: []const u8,
         // func_idx: ?usize,
     ) ?Object {
-        return self.store.get(name) orelse if (self.parent) |parent| parent.get(name) else null;
+        return self.store.getEntry(name) orelse if (self.parent) |parent| parent.get(name) else null;
     }
 
-    pub fn set(self: *Environment, alloc: Allocator, name: []const u8, value: Object) Allocator.Error!void {
-        try self.store.put(alloc, name, value);
+    pub fn set(self: *const Environment, alloc: Allocator, name: []const u8, value: Object) Allocator.Error!Environment {
+        return .{
+            .parent = self.parent,
+            .store = try self.store.insert(alloc, name, value),
+        };
     }
 
-    pub fn inherit(self: *const Environment) Environment {
-        return Environment{ .parent = self, .store = .{} };
+    pub fn inherit(self: *const Environment, alloc: Allocator) !Environment {
+        return Environment{ .parent = self, .store = try Environment.init(alloc) };
     }
 
     pub fn inheritEnsureUnusedCapacity(self: *const Environment, alloc: Allocator, capacity: usize) Allocator.Error!Environment {

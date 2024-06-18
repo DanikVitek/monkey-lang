@@ -60,7 +60,11 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment) !O
             const obj = try eval(alloc, let.value, env);
             if (obj.isError()) return obj;
 
-            try env.set(alloc, let.name, obj);
+            const idx = try env.set(alloc, let.name, obj);
+            if (obj.isFunction()) {
+                const func: *const Function = obj.cast(Function);
+                func.idx = idx;
+            }
 
             break :b Object.NULL;
         },
@@ -221,7 +225,7 @@ fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *const 
 }
 
 fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const Environment) !Object {
-    var block_env = env.inherit();
+    var block_env = env.inherit(alloc);
     errdefer { // TODO: implement proper garbage collection. If the block_env is passed into a function, created in this block, and then deleted -- use after free may occur at the place of the function's call. So `errdefer` for now
         var block_iter = block_env.store.iterator();
         while (block_iter.next()) |entry| {
@@ -525,14 +529,14 @@ test "error handling" {
             .input = "{ let foobar = 10; } foobar;",
             .expected = "identifier not found: foobar",
         },
-        // .{
-        //     .input =
-        //     \\let a = fn() { b };
-        //     \\let b = 0;
-        //     \\a();
-        //     ,
-        //     .expected = "identifier not found: b",
-        // },
+        .{
+            .input =
+            \\let a = fn() { b };
+            \\let b = 0;
+            \\a();
+            ,
+            .expected = "identifier not found: b",
+        },
     };
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
