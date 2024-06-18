@@ -51,9 +51,9 @@ pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
         std.debug.print("Env:\n", .{});
         var env_iter = env.store.iterator();
         while (env_iter.next()) |entry| {
-            const value_str = try entry.value_ptr.inspect(alloc);
+            const value_str = try entry.value.inspect(alloc);
             defer value_str.deinit(alloc);
-            try out.print("\t{s}: {s}\n", .{ entry.key_ptr.*, value_str.value() });
+            try out.print("\t{s}: {s}\n", .{ entry.key, value_str.value() });
         }
 
         const str = try evaluated.inspect(alloc);

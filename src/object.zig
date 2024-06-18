@@ -211,7 +211,7 @@ pub const Null = struct {
 pub const Function = struct {
     params: []const []const u8,
     body: BlockExpr,
-    env: *const Environment,
+    env: *Environment,
 
     pub const object_type: ObjectType = .function;
 
@@ -338,42 +338,43 @@ pub const Environment = struct {
         };
     }
 
-    pub fn get(
-        self: *const Environment,
-        name: []const u8,
-        // func_idx: ?usize,
-    ) ?Object {
-        return self.store.getEntry(name) orelse if (self.parent) |parent| parent.get(name) else null;
+    pub fn get(self: *const Environment, name: []const u8) ?Object {
+        return self.store.get(name) orelse if (self.parent) |parent| parent.get(name) else null;
     }
 
-    pub fn set(self: *const Environment, alloc: Allocator, name: []const u8, value: Object) Allocator.Error!Environment {
+    pub fn inserted(self: *const Environment, name: []const u8, value: Object) Allocator.Error!Environment {
         return .{
             .parent = self.parent,
-            .store = try self.store.insert(alloc, name, value),
+            .store = try self.store.inserted(name, value, struct {
+                fn valEql(a: Object, b: Object) bool {
+                    return a.eql(b);
+                }
+            }.valEql),
         };
     }
 
-    pub fn inherit(self: *const Environment, alloc: Allocator) !Environment {
-        return Environment{ .parent = self, .store = try Environment.init(alloc) };
+    pub fn insert(self: *Environment, name: []const u8, value: Object) Allocator.Error!void {
+        try self.store.insert(name, value, struct {
+            fn valEql(a: Object, b: Object) bool {
+                return a.eql(b);
+            }
+        }.valEql);
     }
 
-    pub fn inheritEnsureUnusedCapacity(self: *const Environment, alloc: Allocator, capacity: usize) Allocator.Error!Environment {
-        var cloned = self.inherit();
-        try cloned.store.ensureTotalCapacity(alloc, capacity);
-        return cloned;
-    }
-
-    pub fn ensureUnusedCapacity(self: *Environment, alloc: Allocator, capacity: usize) Allocator.Error!void {
-        try self.store.ensureTotalCapacity(alloc, capacity);
+    pub fn inherit(self: *const Environment, alloc: Allocator) Allocator.Error!Environment {
+        return Environment{
+            .parent = self,
+            .store = try StringHAMT(Object).init(alloc),
+        };
     }
 
     pub fn deinit(self: Environment, alloc: Allocator) void {
-        var iter = self.store.valueIterator();
-        while (iter.next()) |value| {
-            value.deinit(alloc);
+        var iter = self.store.iterator();
+        while (iter.next()) |entry| {
+            entry.value.deinit(alloc);
         }
 
-        self.store.deinit(alloc);
+        self.store.deinit();
     }
 
     pub fn iterator(self: *const Environment) Iterator {
@@ -385,11 +386,11 @@ pub const Environment = struct {
 
     pub const Iterator = struct {
         parent_env: ?*const Environment,
-        store_iter: std.StringArrayHashMapUnmanaged(Object).Iterator,
+        store_iter: StringHAMT(Object).Iterator,
 
         pub fn next(self: *Iterator) ?Object {
             return if (self.store_iter.next()) |entry|
-                entry.value_ptr.*
+                entry.value
             else if (self.parent_env) |parent_env| b: {
                 self.store_iter = parent_env.store.iterator();
                 self.parent_env = parent_env.parent;
@@ -405,24 +406,41 @@ pub const Environment = struct {
         defer arena.deinit();
         const alloc = arena.allocator();
 
-        var env = Environment{};
-        try env.set(alloc, "a", Object.TRUE);
-        try env.set(alloc, "b", Object.FALSE);
+        var env = try Environment.init(alloc);
+        try env.insert("a", Object.TRUE);
+        try env.insert("b", Object.FALSE);
 
-        var child_env = try env.inheritEnsureUnusedCapacity(alloc, 1);
-        try child_env.set(alloc, "c", Object.NULL);
+        var child_env = try env.inherit(alloc);
+        try child_env.insert("c", Object.NULL);
+
+        const contains = struct {
+            fn contains(items: []const Object, obj: Object) bool {
+                for (items) |item| {
+                    if (item.eql(obj)) return true;
+                }
+                return false;
+            }
+        }.contains;
 
         var iter = env.iterator();
 
-        try testing.expect(iter.next().?.eql(Object.TRUE));
-        try testing.expect(iter.next().?.eql(Object.FALSE));
+        var items = std.BoundedArray(Object, 2){};
+        try items.append(iter.next().?);
+        try items.append(iter.next().?);
+        try testing.expect(contains(items.constSlice(), Object.TRUE));
+        try testing.expect(contains(items.constSlice(), Object.FALSE));
         try testing.expect(iter.next() == null);
 
         var child_iter = child_env.iterator();
 
-        try testing.expect(child_iter.next().?.eql(Object.NULL));
-        try testing.expect(child_iter.next().?.eql(Object.TRUE));
-        try testing.expect(child_iter.next().?.eql(Object.FALSE));
+        var child_items = std.BoundedArray(Object, 3){};
+        try child_items.append(child_iter.next().?);
+        try child_items.append(child_iter.next().?);
+        try child_items.append(child_iter.next().?);
+        try testing.expect(contains(child_items.constSlice(), Object.NULL));
+        try testing.expect(contains(child_items.constSlice(), Object.TRUE));
+        try testing.expect(contains(child_items.constSlice(), Object.FALSE));
         try testing.expect(child_iter.next() == null);
+        try testing.expect(child_items.get(0).eql(Object.NULL));
     }
 };

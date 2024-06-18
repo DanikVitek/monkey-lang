@@ -60,10 +60,11 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment) !O
             const obj = try eval(alloc, let.value, env);
             if (obj.isError()) return obj;
 
-            const idx = try env.set(alloc, let.name, obj);
+            try env.insert(let.name, obj);
+
             if (obj.isFunction()) {
                 const func: *const Function = obj.cast(Function);
-                func.idx = idx;
+                try func.env.insert(let.name, obj);
             }
 
             break :b Object.NULL;
@@ -73,7 +74,7 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment) !O
 
 const Error = error{} || Allocator.Error;
 
-fn eval(alloc: Allocator, expr: Ast.Expression, env: *const Environment) Error!Object {
+fn eval(alloc: Allocator, expr: Ast.Expression, env: *Environment) Error!Object {
     return switch (expr) {
         .int => |value| (Integer{ .value = value }).object(),
         .bool => |value| nativeBoolToBooleanObject(value),
@@ -209,7 +210,7 @@ fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !
     return nativeBoolToBooleanObject(result);
 }
 
-fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *const Environment) !Object {
+fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *Environment) !Object {
     const cond_obj = try eval(alloc, conditional.cond.*, env);
     if (cond_obj.isError()) return cond_obj;
     if (cond_obj.objectType() != .boolean) {
@@ -225,14 +226,9 @@ fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *const 
 }
 
 fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const Environment) !Object {
-    var block_env = env.inherit(alloc);
-    errdefer { // TODO: implement proper garbage collection. If the block_env is passed into a function, created in this block, and then deleted -- use after free may occur at the place of the function's call. So `errdefer` for now
-        var block_iter = block_env.store.iterator();
-        while (block_iter.next()) |entry| {
-            entry.value_ptr.deinit(alloc);
-        }
-        block_env.store.deinit(alloc);
-    }
+    var block_env = try env.inherit(alloc);
+    // TODO: implement proper garbage collection. If the block_env is passed into a function, created in this block, and then deleted -- use after free may occur at the place of the function's call. So `errdefer` for now
+    errdefer block_env.deinit(alloc);
 
     const program = block.program.slice();
     var result: Object = Object.NULL;
@@ -255,10 +251,10 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const 
 }
 
 fn evalFunctionCall(alloc: Allocator, func: *const Function, args: []const Object) !Object {
-    var call_env = try func.env.inheritEnsureUnusedCapacity(alloc, args.len);
+    var call_env = try func.env.inherit(alloc);
 
     for (0..args.len) |i| {
-        try call_env.set(alloc, func.params[i], args[i]);
+        try call_env.insert(func.params[i], args[i]);
     }
 
     const obj = try evalBlockExpr(alloc, func.body, &call_env);
@@ -276,7 +272,7 @@ inline fn nativeBoolToBooleanObject(value: bool) Object {
 }
 
 /// caller owns returned memory
-fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: *const Environment) ![]const Object {
+fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: *Environment) ![]const Object {
     var result = try std.ArrayList(Object).initCapacity(alloc, args.len);
     errdefer result.deinit();
 
@@ -716,7 +712,7 @@ fn testEval(alloc: Allocator, input: []const u8) !Object {
     const ast = try parser.parseProgram(alloc);
     // std.debug.print("{}\n", .{ast});
 
-    var env = Environment{};
+    var env = try Environment.init(alloc);
 
     return try execute(alloc, ast, &env);
 }

@@ -25,7 +25,7 @@ pub fn AutoHashArrayMappedTrie(comptime K: type, comptime V: type) type {
 pub fn AutoContext(comptime K: type) type {
     return struct {
         pub const hash = getAutoHashFn(K, @This());
-        pub const eql = getAutoEqlFn(K, @This());
+        pub const key_eql = getAutoEqlFn(K, @This());
     };
 }
 
@@ -82,7 +82,7 @@ pub fn HashArrayMappedTrie(
 
         const hash_size: Log2IntCeil(Digest) = @intCast(@typeInfo(Digest).Int.bits);
         const table_size: Log2IntCeil(Digest) = hash_size;
-        const t: Log2IntCeil(Log2IntCeil(Digest)) = @intCast(@typeInfo(Log2IntCeil(Digest)).Int.bits);
+        const t: Log2IntCeil(Log2Int(Digest)) = @intCast(@typeInfo(Log2Int(Digest)).Int.bits);
         const max_depth: usize = std.math.divCeil(usize, table_size, t) catch unreachable;
 
         root: *const Branch,
@@ -90,7 +90,6 @@ pub fn HashArrayMappedTrie(
 
         const Node = struct {
             ref_count: AtomicUsize = AtomicUsize.init(1),
-            kind: NodeKind,
             impl: NodeImpl,
 
             inline fn addRef(self: *const Node) void {
@@ -102,9 +101,9 @@ pub fn HashArrayMappedTrie(
                 const ref_count: *AtomicUsize = @constCast(&self.ref_count);
                 if (ref_count.fetchSub(1, .release) == 1) {
                     @fence(.acquire);
-                    switch (self.kind) {
-                        .branch => self.impl.branch.deinit(allocator),
-                        .leaf => self.impl.leaf.deinit(allocator),
+                    switch (self.impl) {
+                        .branch => |branch| branch.deinit(allocator),
+                        .leaf => |leaf| leaf.deinit(allocator),
                     }
                     allocator.destroy(self);
                 }
@@ -112,59 +111,54 @@ pub fn HashArrayMappedTrie(
 
             inline fn cast(self: *const Node, comptime T: type) *const T {
                 self.validateCast(T);
-                return switch (self.kind) {
-                    .branch => if (T == Leaf) unreachable else &self.impl.branch,
-                    .leaf => if (T == Branch) unreachable else &self.impl.leaf,
+                return switch (self.impl) {
+                    .branch => |*branch| if (T == Leaf) unreachable else branch,
+                    .leaf => |*leaf| if (T == Branch) unreachable else leaf,
                 };
             }
 
             inline fn castMut(self: *Node, comptime T: type) *T {
                 self.validateCast(T);
-                return switch (self.kind) {
-                    .branch => if (T == Leaf) unreachable else &self.impl.branch,
-                    .leaf => if (T == Branch) unreachable else &self.impl.leaf,
+                return switch (self.impl) {
+                    .branch => |*branch| if (T == Leaf) unreachable else branch,
+                    .leaf => |*leaf| if (T == Branch) unreachable else leaf,
                 };
             }
 
             inline fn validateCast(self: *const Node, comptime T: type) void {
                 if (T == Branch)
-                    std.debug.assert(self.kind == .branch)
+                    std.debug.assert(self.impl == .branch)
                 else if (T == Leaf)
-                    std.debug.assert(self.kind == .leaf)
+                    std.debug.assert(self.impl == .leaf)
                 else
                     @compileError("T can only be Branch or Leaf");
             }
         };
 
-        const NodeKind = enum {
-            branch,
-            leaf,
-        };
-
-        const NodeImpl = extern union {
+        const NodeImpl = union(enum) {
             branch: Branch,
             leaf: Leaf,
         };
 
-        const Branch = extern struct {
-            bitmap: Digest align(@alignOf(usize)) = 0,
-            len: usize = 0,
+        const Branch = struct {
+            bitmap: Digest = 0,
+            len: Log2IntCeil(Digest) = 0,
             base: [*]*const Node = undefined,
 
             fn node(self: Branch) Node {
-                return Node{ .impl = .{ .branch = self }, .kind = .branch };
+                return Node{ .impl = .{ .branch = self } };
             }
 
             fn asNode(self: *const Branch) *const Node {
-                return @fieldParentPtr("impl", @as(*const NodeImpl, @ptrCast(@alignCast(self))));
+                return @fieldParentPtr("impl", @as(*const NodeImpl, @fieldParentPtr("branch", self)));
             }
 
             fn asNodeMut(self: *Branch) *Node {
-                return @fieldParentPtr("impl", @as(*NodeImpl, @ptrCast(@alignCast(self))));
+                return @fieldParentPtr("impl", @as(*NodeImpl, @fieldParentPtr("branch", self)));
             }
 
             fn initCapacity(allocator: Allocator, size: Log2IntCeil(Digest), bitmap: Digest) Allocator.Error!Branch {
-                std.debug.print(std.fmt.comptimePrint("size: {{d}}; bitmap: {{b:0>{d}}}\n", .{@typeInfo(Digest).Int.bits}), .{ size, bitmap });
+                // std.debug.print(std.fmt.comptimePrint("size: {{d}}; bitmap: {{b:0>{d}}}\n", .{@typeInfo(Digest).Int.bits}), .{ size, bitmap });
                 std.debug.assert(size <= @typeInfo(Digest).Int.bits);
                 std.debug.assert(size == @popCount(bitmap));
                 const mem = try allocator.alloc(*const Node, size);
@@ -202,10 +196,11 @@ pub fn HashArrayMappedTrie(
 
             fn deinit(self: Branch, allocator: Allocator) void {
                 std.debug.assert(self.len == @popCount(self.bitmap));
-                for (0..@popCount(self.bitmap)) |i| {
-                    self.base[i].deinit(allocator);
+                const slice = self.base[0..self.len];
+                for (slice) |stored_node| {
+                    stored_node.deinit(allocator);
                 }
-                allocator.free(self.base[0..self.len]);
+                allocator.free(slice);
             }
 
             fn withInserted(
@@ -215,14 +210,15 @@ pub fn HashArrayMappedTrie(
                 child: *const Node,
             ) Allocator.Error!Branch {
                 std.debug.assert(!idx.bitIsSet(self.bitmap));
+                std.debug.assert(self.len == @popCount(self.bitmap));
 
                 const new_bitmap = idx.bitPosition() | self.bitmap;
 
-                const old_size = @popCount(self.bitmap);
+                const old_size = self.len;
 
                 const new_table = try initCapacity(allocator, old_size + 1, new_bitmap);
 
-                const split_point = idx.toCompactIndex(self.bitmap);
+                const split_point = idx.toCompactIndex(self.bitmap)[0];
 
                 for (0..split_point) |i| {
                     var sharedNode = self.base[i];
@@ -248,14 +244,15 @@ pub fn HashArrayMappedTrie(
                 child: *const Node,
             ) Allocator.Error!Branch {
                 std.debug.assert(idx.bitIsSet(self.bitmap));
+                std.debug.assert(self.len == @popCount(self.bitmap));
 
                 const new_bitmap = idx.bitPosition() | self.bitmap;
 
-                const old_size = @popCount(self.bitmap);
+                const old_size = self.len;
 
                 const new_table = try initCapacity(allocator, old_size, new_bitmap);
 
-                const split_point = idx.toCompactIndex(self.bitmap);
+                const split_point = idx.toCompactIndex(self.bitmap)[0];
 
                 for (0..split_point) |i| {
                     var sharedNode = self.base[i];
@@ -274,28 +271,34 @@ pub fn HashArrayMappedTrie(
                 return new_table;
             }
 
-            fn getAt(self: *const Branch, idx: SparseIndex) ?*const Node {
+            fn getAtSparse(self: *const Branch, idx: SparseIndex) ?*const Node {
                 return if (idx.bitIsSet(self.bitmap))
-                    self.base[idx.toCompactIndex(self.bitmap)]
+                    self.getAtCompact(idx.toCompactIndex(self.bitmap))
                 else
                     null;
             }
+
+            fn getAtCompact(self: *const Branch, idx: CompactIndex) ?*const Node {
+                const i = idx[0];
+                std.debug.assert(i < self.len);
+                return self.base[i];
+            }
         };
-        const Leaf = extern struct {
-            hash: Digest align(@alignOf(usize)),
+        const Leaf = struct {
+            hash: Digest,
             len: usize,
             ptr: *Entry,
 
             fn node(self: Leaf) Node {
-                return Node{ .impl = .{ .leaf = self }, .kind = .leaf };
+                return Node{ .impl = .{ .leaf = self } };
             }
 
             fn asNode(self: *const Leaf) *const Node {
-                return @fieldParentPtr("impl", @as(*const NodeImpl, @ptrCast(@alignCast(self))));
+                return @fieldParentPtr("impl", @as(*const NodeImpl, @fieldParentPtr("leaf", self)));
             }
 
             fn asNodeMut(self: *Leaf) *Node {
-                return @fieldParentPtr("impl", @as(*const NodeImpl, @ptrCast(@alignCast(self))));
+                return @fieldParentPtr("impl", @as(*NodeImpl, @fieldParentPtr("leaf", self)));
             }
 
             pub inline fn fromSlice(hash: Digest, entries: []Entry) Leaf {
@@ -395,11 +398,13 @@ pub fn HashArrayMappedTrie(
                 return bitmap & self.bitPosition() != 0;
             }
 
-            pub inline fn toCompactIndex(self: SparseIndex, bitmap: Digest) Log2IntCeil(Digest) {
+            pub inline fn toCompactIndex(self: SparseIndex, bitmap: Digest) CompactIndex {
                 // bit = 0b0010_0000 => mask = bit - 1 = 0b0001_1111 => popCount(mask) = 5 => popCount(bitmap & mask) <= 5
-                return @popCount(bitmap & (self.bitPosition() - 1));
+                return .{@intCast(@popCount(bitmap & (self.bitPosition() - 1)))};
             }
         };
+
+        const CompactIndex = struct { Log2Int(Digest) };
 
         const ChunkedHash = struct {
             hash: Digest,
@@ -453,8 +458,8 @@ pub fn HashArrayMappedTrie(
                 var branches: [max_depth]*const Branch = undefined;
                 var hash_chunks: [max_depth]ChunkedHash.Chunk = undefined;
 
-                var next_node = current_branch.getAt(.{ .value = chunk });
-                while (next_node != null and next_node.?.kind == .branch) {
+                var next_node = current_branch.getAtSparse(.{ .value = chunk });
+                while (next_node != null and next_node.?.impl == .branch) {
                     branches[size] = current_branch;
                     hash_chunks[size] = chunk;
 
@@ -463,7 +468,7 @@ pub fn HashArrayMappedTrie(
                     chunked_hash.progress();
 
                     chunk = chunked_hash.chunk();
-                    next_node = current_branch.getAt(.{ .value = chunk });
+                    next_node = current_branch.getAtSparse(.{ .value = chunk });
                 }
 
                 std.debug.assert(size <= max_depth);
@@ -509,12 +514,20 @@ pub fn HashArrayMappedTrie(
 
             /// If entry for the given key already exists with a different value, it will be replaced.
             /// Otherwise `null` is returned.
-            fn addEntryAtLeaf(self: *const Path, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!?*const Branch {
+            fn addEntryAtLeaf(
+                self: *const Path,
+                allocator: Allocator,
+                key: K,
+                value: V,
+                ctx: Context,
+                val_eql_ctx: anytype,
+                comptime valEql: fn (@TypeOf(val_eql_ctx), a: V, b: V) bool,
+            ) Allocator.Error!?*const Branch {
                 std.debug.assert(self.leaf != null);
 
                 const existing_leaf = self.leaf.?;
                 if (existing_leaf.findValue(key, ctx)) |stored_value| {
-                    if (std.meta.eql(stored_value.*, value)) return null; // if the same value already exists, do nothing
+                    if (valEql(val_eql_ctx, stored_value.*, value)) return null; // if the same value already exists, do nothing
                     // TODO: implement replacing the value
 
                     // replace the leaf with a leaf, containing the new value
@@ -609,121 +622,239 @@ pub fn HashArrayMappedTrie(
             };
         }
 
-        pub inline fn deinit(self: Self, allocator: Allocator) void {
-            self.root.asNode().deinit(allocator);
+        pub inline fn deinit(self: Self) void {
+            self.root.asNode().deinit(self.allocator);
         }
 
-        pub inline fn get(self: *const Self, key: K) ?*V {
+        pub inline fn get(self: *const Self, key: K) ?V {
             return self.getContext(key, undefined);
         }
 
-        pub inline fn getContext(self: *const Self, key: K, ctx: Context) ?*V {
-            const maybe_entry = self.getEntryContext(key, ctx) orelse return null;
+        pub inline fn getContext(self: *const Self, key: K, ctx: Context) ?V {
+            const maybe_entry = self.getEntryPtrContext(key, ctx) orelse return null;
+            return maybe_entry.value;
+        }
+
+        pub inline fn getPtr(self: *const Self, key: K) ?*V {
+            return self.getPtrContext(key, undefined);
+        }
+
+        pub inline fn getPtrContext(self: *const Self, key: K, ctx: Context) ?*V {
+            const maybe_entry = self.getEntryPtrContext(key, ctx) orelse return null;
             return &maybe_entry.value;
         }
 
-        pub inline fn getEntry(self: *const Self, key: K) ?*Entry {
-            return self.getEntryContext(key, undefined);
+        pub inline fn getEntryPtr(self: *const Self, key: K) ?*Entry {
+            return self.getEntryPtrContext(key, undefined);
         }
 
-        pub fn getEntryContext(self: *const Self, key: K, ctx: Context) ?*Entry {
+        pub fn getEntryPtrContext(self: *const Self, key: K, ctx: Context) ?*Entry {
             var chunked_hash: ChunkedHash = .{ .hash = ctx.hash(key) };
 
             var sparse_idx: SparseIndex = .{ .value = chunked_hash.chunk() };
             if (!sparse_idx.bitIsSet(self.root.bitmap)) return null; // hash table entry is empty
 
-            var current: *const Node = self.root.base[sparse_idx.toCompactIndex(self.root.bitmap)];
+            var current: *const Node = self.root.base[sparse_idx.toCompactIndex(self.root.bitmap)[0]];
 
             chunked_hash.progress();
 
-            while (true) switch (current.kind) {
-                .branch => {
-                    const branch: *const Branch = current.cast(Branch);
-
+            while (true) switch (current.impl) {
+                .branch => |*branch| {
                     sparse_idx.value = chunked_hash.chunk();
                     if (!sparse_idx.bitIsSet(branch.bitmap)) return null;
 
-                    current = branch.base[sparse_idx.toCompactIndex(branch.bitmap)];
+                    current = branch.base[sparse_idx.toCompactIndex(branch.bitmap)[0]];
 
                     chunked_hash.progress();
                 },
-                .leaf => {
-                    const leaf: *const Leaf = current.cast(Leaf);
-                    return leaf.find(key, ctx);
-                },
+                .leaf => |*leaf| return leaf.find(key, ctx),
             };
         }
 
-        pub inline fn insert(self: *Self, allocator: Allocator, key: K, value: V) Allocator.Error!void {
-            return self.insertContext(allocator, key, value, undefined);
+        pub inline fn insert(
+            self: *Self,
+            key: K,
+            value: V,
+            comptime valEql: fn (a: V, b: V) bool,
+        ) Allocator.Error!void {
+            return self.insertContext(key, value, undefined, {}, struct {
+                fn valEqlCtx(_: void, a: V, b: V) bool {
+                    return valEql(a, b);
+                }
+            }.valEqlCtx);
         }
 
-        pub fn insertContext(self: *Self, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!void {
-            const new_root = try self.insertedBranch(allocator, key, value, ctx) orelse return;
-            self.deinit(allocator);
+        pub fn insertContext(
+            self: *Self,
+            key: K,
+            value: V,
+            ctx: Context,
+            val_eql_ctx: anytype,
+            comptime valEql: fn (@TypeOf(val_eql_ctx), a: V, b: V) bool,
+        ) Allocator.Error!void {
+            const new_root = try self.insertedBranch(key, value, ctx, val_eql_ctx, valEql) orelse return;
+            self.deinit();
             self.root = new_root;
         }
 
-        pub inline fn inserted(self: Self, allocator: Allocator, key: K, value: V) Allocator.Error!Self {
-            return self.insertedContext(allocator, key, value, undefined);
+        pub inline fn inserted(
+            self: Self,
+            key: K,
+            value: V,
+            comptime valEql: fn (a: V, b: V) bool,
+        ) Allocator.Error!Self {
+            return self.insertedContext(key, value, undefined, {}, struct {
+                fn valEqlCtx(_: void, a: V, b: V) bool {
+                    return valEql(a, b);
+                }
+            }.valEqlCtx);
         }
 
-        pub fn insertedContext(self: Self, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!Self {
+        pub fn insertedContext(
+            self: Self,
+            key: K,
+            value: V,
+            ctx: Context,
+            val_eql_ctx: anytype,
+            comptime valEql: fn (@TypeOf(val_eql_ctx), a: V, b: V) bool,
+        ) Allocator.Error!Self {
             return .{
-                .root = (try self.insertedBranch(allocator, key, value, ctx)) orelse return self,
-                .allocator = allocator,
+                .root = (try self.insertedBranch(key, value, ctx, val_eql_ctx, valEql)) orelse return self,
+                .allocator = self.allocator,
             };
         }
 
-        fn insertedBranch(self: *const Self, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!?*const Branch {
+        fn insertedBranch(
+            self: *const Self,
+            key: K,
+            value: V,
+            ctx: Context,
+            val_eql_ctx: anytype,
+            comptime valEql: fn (@TypeOf(val_eql_ctx), a: V, b: V) bool,
+        ) Allocator.Error!?*const Branch {
             const path = Path.init(key, self.root, ctx);
             return if (path.leaf != null)
-                try path.addEntryAtLeaf(allocator, key, value, ctx)
+                try path.addEntryAtLeaf(self.allocator, key, value, ctx, val_eql_ctx, valEql)
             else
-                try path.addEntryAtUnsetPosition(allocator, Leaf{ .hash = path.chunked_hash.hash, .len = 1, .ptr = b: {
-                    const ptr = try allocator.create(Entry);
+                try path.addEntryAtUnsetPosition(self.allocator, Leaf{ .hash = path.chunked_hash.hash, .len = 1, .ptr = b: {
+                    const ptr = try self.allocator.create(Entry);
                     ptr.* = .{ .key = key, .value = value };
                     break :b ptr;
                 } });
         }
 
-        pub fn print(self: *const Self) !void {
-            const stdout = std.io.getStdOut().writer();
-            var buffered = std.io.bufferedWriter(stdout);
+        pub const Iterator = struct {
+            levels: std.BoundedArray(Level, max_depth) = .{},
+            leaf: ?LeafEntry = null,
 
-            const w = buffered.writer();
+            const Level = struct {
+                branch: *const Branch,
+                idx: Log2Int(Digest) = 0,
+            };
+            const LeafEntry = struct {
+                leaf: *const Leaf,
+                idx: usize = 0,
+            };
 
-            for (self.root, 0..) |maybe_node, i| {
-                try w.print("{:0>2}: ", .{i});
-
-                if (maybe_node) |node| {
-                    try _print(w, node, 1);
-                } else {
-                    try w.print("null\n", .{});
-                }
+            pub fn init(root: *const Branch) Iterator {
+                var iter = Iterator{};
+                if (root.len == 0) return iter;
+                iter.descendFrom(root, 0);
+                return iter;
             }
 
-            try buffered.flush();
+            pub fn next(self: *Iterator) ?*Entry {
+                if (self.leaf == null) return null;
+
+                const entry: *Entry = &self.leaf.?.leaf.sliceMut()[self.leaf.?.idx];
+
+                if (self.leaf.?.idx + 1 < self.leaf.?.leaf.len) {
+                    self.leaf.?.idx += 1;
+                    return entry;
+                }
+
+                self.leaf = null;
+
+                var level: *Level = &self.levels.buffer[self.levels.len - 1];
+
+                while (level.idx + 1 == level.branch.len) {
+                    self.levels.len -= 1;
+                    if (self.levels.len == 0) return entry;
+                    level = &self.levels.buffer[self.levels.len - 1];
+                }
+
+                level.idx += 1;
+
+                const next_node: *const Node = level.branch.getAtCompact(.{level.idx}).?;
+                switch (next_node.impl) {
+                    .leaf => |*next_leaf| {
+                        self.leaf = .{ .leaf = next_leaf };
+                    },
+                    .branch => |*next_branch| self.descendFrom(next_branch, self.levels.len - 1),
+                }
+
+                return entry;
+            }
+
+            /// root must not be empty
+            fn descendFrom(self: *Iterator, root: *const Branch, start_depth: IntFittingRange(0, max_depth)) void {
+                var leaf: ?*const Leaf = null;
+                var depth = start_depth;
+                var branch = root;
+                while (leaf == null) {
+                    std.debug.assert(branch.len > 0);
+
+                    self.levels.buffer[depth] = .{ .branch = branch };
+                    depth += 1;
+
+                    const next_node = branch.getAtCompact(.{0}).?;
+                    switch (next_node.impl) {
+                        .leaf => |*next_leaf| leaf = next_leaf,
+                        .branch => |*next_branch| {
+                            std.debug.assert(next_branch.len > 1);
+                            branch = next_branch;
+                        },
+                    }
+                }
+                std.debug.assert(leaf.?.len == 1);
+                self.leaf = .{ .leaf = leaf.? };
+                self.levels.len = depth;
+            }
+        };
+
+        pub fn iterator(self: *const Self) Iterator {
+            return Iterator.init(self.root);
         }
 
-        fn _print(w: anytype, node: *const Node, depth: u16) !void {
-            // @compileLog(@TypeOf(w));
+        test Iterator {
+            const HAMT = StringHashArrayMappedTrie(i32);
+            const testing = std.testing;
 
-            switch (node.*) {
-                .kv => |pair| {
-                    try w.print(".{{ .key = \"{s}\", .value = {} }}\n", .{ pair.key, pair.value });
-                },
-                .table => |table| {
-                    try w.print(".{{ .map = 0x{X:0>8}, .ptr = {*} }}\n", .{ table.bitmap, table.base });
+            var trie = try HAMT.init(testing.allocator);
+            defer trie.deinit();
 
-                    for (0..@popCount(table.bitmap)) |i| {
-                        for (0..depth) |_| try w.print(" ", .{});
-                        try w.print("{:0>2}: ", .{i});
+            const valEql = struct {
+                fn valEql(a: i32, b: i32) bool {
+                    return a == b;
+                }
+            }.valEql;
 
-                        try _print(w, &table.base[i], depth + 1);
-                    }
-                },
+            try trie.insert("foo", 42, valEql);
+            try trie.insert("bar", 43, valEql);
+            try trie.insert("baz", 44, valEql);
+
+            var iter = trie.iterator();
+
+            try testing.expectEqual(@as(IntFittingRange(0, max_depth), 1), iter.levels.len);
+            try testing.expectEqual(@as(Log2IntCeil(Digest), 3), iter.levels.buffer[0].branch.len);
+            try testing.expectEqual(@as(Log2Int(Digest), 0), iter.levels.buffer[0].idx);
+
+            var sum: i32 = 0;
+            while (iter.next()) |entry| {
+                sum += entry.value;
             }
+
+            try testing.expectEqual(42 + 43 + 44, sum);
         }
     };
 }
@@ -816,84 +947,108 @@ fn verify(comptime K: type, comptime Context: type) void {
 
 test "trie get inplace-inserted entry" {
     const Pair = StringTrie.Entry;
-    const allocator = std.testing.allocator;
+    const testing = std.testing;
 
-    var trie = try StringTrie.init(allocator);
-    defer trie.deinit(allocator);
+    var trie = try StringTrie.init(testing.allocator);
+    defer trie.deinit();
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), trie.getEntry("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, null), trie.getEntryPtr("sdvx"));
 
-    try trie.insert(allocator, "sdvx", {});
+    const valEql = struct {
+        fn valEql(_: void, _: void) bool {
+            return true;
+        }
+    }.valEql;
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = {} }), trie.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), trie.getEntry(""));
+    try trie.insert("sdvx", {}, valEql);
 
-    try trie.insert(allocator, "", {});
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "", .value = {} }), trie.getEntry(""));
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = {} }), trie.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, null), trie.getEntryPtr(""));
+
+    try trie.insert("", {}, valEql);
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "", .value = {} }), trie.getEntryPtr(""));
 }
 
 test "trie get immutably inserted entry" {
     const Pair = StringTrie.Entry;
-    const allocator = std.testing.allocator;
+    const testing = std.testing;
 
-    const t1 = try StringTrie.init(allocator);
-    defer t1.deinit(allocator);
+    const t1 = try StringTrie.init(testing.allocator);
+    defer t1.deinit();
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntryPtr("sdvx"));
 
-    const t2 = try t1.inserted(allocator, "sdvx", {});
-    defer t2.deinit(allocator);
+    const valEql = struct {
+        fn valEql(_: void, _: void) bool {
+            return true;
+        }
+    }.valEql;
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = {} }), t2.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t2.getEntry(""));
+    const t2 = try t1.inserted("sdvx", {}, valEql);
+    defer t2.deinit();
 
-    const t3 = try t2.inserted(allocator, "", {});
-    defer t3.deinit(allocator);
+    try testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = {} }), t2.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, null), t2.getEntryPtr(""));
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = {} }), t2.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t2.getEntry(""));
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "", .value = {} }), t3.getEntry(""));
+    const t3 = try t2.inserted("", {}, valEql);
+    defer t3.deinit();
+
+    try testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = {} }), t2.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, null), t2.getEntryPtr(""));
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "", .value = {} }), t3.getEntryPtr(""));
 }
 
 test "trie get inplace-inserted entry for the same key" {
     const HAMT = StringHashArrayMappedTrie(u32);
     const Pair = HAMT.Entry;
-    const allocator = std.testing.allocator;
+    const testing = std.testing;
 
-    var trie = try HAMT.init(allocator);
-    defer trie.deinit(allocator);
+    var trie = try HAMT.init(testing.allocator);
+    defer trie.deinit();
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), trie.getEntry("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, null), trie.getEntryPtr("sdvx"));
 
-    try trie.insert(allocator, "sdvx", 1);
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), trie.getEntry("sdvx"));
+    const valEql = struct {
+        fn valEql(a: u32, b: u32) bool {
+            return a == b;
+        }
+    }.valEql;
 
-    try trie.insert(allocator, "sdvx", 2);
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 2 }), trie.getEntry("sdvx"));
+    try trie.insert("sdvx", 1, valEql);
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), trie.getEntryPtr("sdvx"));
+
+    try trie.insert("sdvx", 2, valEql);
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 2 }), trie.getEntryPtr("sdvx"));
 }
 
 test "trie get immutably inserted entry for the same key" {
     const HAMT = StringHashArrayMappedTrie(u32);
     const Pair = HAMT.Entry;
-    const allocator = std.testing.allocator;
+    const testing = std.testing;
 
-    const t1 = try HAMT.init(allocator);
-    defer t1.deinit(allocator);
+    const t1 = try HAMT.init(testing.allocator);
+    defer t1.deinit();
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntryPtr("sdvx"));
 
-    const t2 = try t1.inserted(allocator, "sdvx", 1);
-    defer t2.deinit(allocator);
+    const valEql = struct {
+        fn valEql(a: u32, b: u32) bool {
+            return a == b;
+        }
+    }.valEql;
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), t2.getEntry("sdvx"));
+    const t2 = try t1.inserted("sdvx", 1, valEql);
+    defer t2.deinit();
 
-    const t3 = try t2.inserted(allocator, "sdvx", 2);
-    defer t3.deinit(allocator);
+    try testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), t2.getEntryPtr("sdvx"));
 
-    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), t2.getEntry("sdvx"));
-    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 2 }), t3.getEntry("sdvx"));
+    const t3 = try t2.inserted("sdvx", 2, valEql);
+    defer t3.deinit();
+
+    try testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), t2.getEntryPtr("sdvx"));
+    try testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 2 }), t3.getEntryPtr("sdvx"));
 }
