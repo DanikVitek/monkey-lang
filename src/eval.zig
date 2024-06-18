@@ -18,13 +18,14 @@ const Environment = @import("object.zig").Environment;
 const Int = @import("object.zig").Int;
 const String = @import("lib.zig").String;
 
-pub fn execute(alloc: Allocator, ast: Ast, env: *Environment) !Object {
+pub fn execute(alloc: Allocator, ast: Ast, env: Environment) !struct { Object, Environment } {
     const program = ast.program.slice();
     var result: Object = Object.NULL;
+    var _env = env;
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result.deinit(alloc);
-        result = try executeStatement(alloc, stmt, env);
+        result, _env = try executeStatement(alloc, stmt, _env);
         switch (result.objectType()) {
             .return_value => {
                 const ret = result.cast(ReturnValue);
@@ -36,45 +37,45 @@ pub fn execute(alloc: Allocator, ast: Ast, env: *Environment) !Object {
             else => {},
         }
     }
-    return result;
+    return .{ result, _env };
 }
 
-fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: *Environment) !Object {
+fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: Environment) !struct { Object, Environment } {
     return switch (stmt) {
-        .expr => |expr| try eval(alloc, expr, env),
+        .expr => |expr| .{ try eval(alloc, expr, env), env },
         .@"return" => |opt_expr| b: {
             const obj = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
-            if (obj.isError()) break :b obj;
+            if (obj.isError()) break :b .{ obj, env };
             const ret = try alloc.create(ReturnValue);
             ret.value = obj;
-            break :b ret.object();
+            break :b .{ ret.object(), env };
         },
         .@"break" => |opt_expr| b: {
             const obj = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
-            if (obj.isError()) break :b obj;
+            if (obj.isError()) break :b .{ obj, env };
             const brk = try alloc.create(BreakValue);
             brk.value = obj;
-            break :b brk.object();
+            break :b .{ brk.object(), env };
         },
         .let => |let| b: {
-            const obj = try eval(alloc, let.value, env);
-            if (obj.isError()) return obj;
+            var obj = try eval(alloc, let.value, env);
+            if (obj.isError()) break :b .{ obj, env };
 
-            try env.insert(let.name, obj);
+            const new_env = try env.inserted(let.name, obj);
 
             if (obj.isFunction()) {
-                const func: *const Function = obj.cast(Function);
-                try func.env.insert(let.name, obj);
+                const func: *Function = obj.cast(Function);
+                func.env = new_env;
             }
 
-            break :b Object.NULL;
+            break :b .{ Object.NULL, new_env };
         },
     };
 }
 
 const Error = error{} || Allocator.Error;
 
-fn eval(alloc: Allocator, expr: Ast.Expression, env: *Environment) Error!Object {
+fn eval(alloc: Allocator, expr: Ast.Expression, env: Environment) Error!Object {
     return switch (expr) {
         .int => |value| (Integer{ .value = value }).object(),
         .bool => |value| nativeBoolToBooleanObject(value),
@@ -210,7 +211,7 @@ fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !
     return nativeBoolToBooleanObject(result);
 }
 
-fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *Environment) !Object {
+fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: Environment) !Object {
     const cond_obj = try eval(alloc, conditional.cond.*, env);
     if (cond_obj.isError()) return cond_obj;
     if (cond_obj.objectType() != .boolean) {
@@ -225,16 +226,14 @@ fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *Enviro
         Object.NULL;
 }
 
-fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const Environment) !Object {
-    var block_env = try env.inherit(alloc);
-    // TODO: implement proper garbage collection. If the block_env is passed into a function, created in this block, and then deleted -- use after free may occur at the place of the function's call. So `errdefer` for now
-    errdefer block_env.deinit(alloc);
+fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: Environment) !Object {
+    var block_env = env;
 
     const program = block.program.slice();
     var result: Object = Object.NULL;
     for (0..program.len) |i| {
         const stmt = program.get(i);
-        result = try executeStatement(alloc, stmt, &block_env);
+        result, block_env = try executeStatement(alloc, stmt, block_env);
         if (result.objectType() == .return_value or result.objectType() == .eval_error) break;
         switch (result.objectType()) {
             .break_value => {
@@ -251,13 +250,13 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const 
 }
 
 fn evalFunctionCall(alloc: Allocator, func: *const Function, args: []const Object) !Object {
-    var call_env = try func.env.inherit(alloc);
+    var call_env = func.env;
 
     for (0..args.len) |i| {
-        try call_env.insert(func.params[i], args[i]);
+        call_env = try call_env.inserted(func.params[i], args[i]);
     }
 
-    const obj = try evalBlockExpr(alloc, func.body, &call_env);
+    const obj = try evalBlockExpr(alloc, func.body, call_env);
     std.debug.assert(obj.objectType() != .break_value);
     if (obj.objectType() == .return_value) {
         const ret = obj.cast(ReturnValue);
@@ -272,7 +271,7 @@ inline fn nativeBoolToBooleanObject(value: bool) Object {
 }
 
 /// caller owns returned memory
-fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: *Environment) ![]const Object {
+fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: Environment) ![]const Object {
     var result = try std.ArrayList(Object).initCapacity(alloc, args.len);
     errdefer result.deinit();
 
@@ -712,7 +711,7 @@ fn testEval(alloc: Allocator, input: []const u8) !Object {
     const ast = try parser.parseProgram(alloc);
     // std.debug.print("{}\n", .{ast});
 
-    var env = try Environment.init(alloc);
+    const env = try Environment.init(alloc);
 
-    return try execute(alloc, ast, &env);
+    return (try execute(alloc, ast, env))[0];
 }

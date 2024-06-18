@@ -46,7 +46,7 @@ pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
             continue;
         };
 
-        const evaluated = try evaluator.execute(alloc, ast, &env);
+        const evaluated, env = try evaluator.execute(alloc, ast, env);
 
         std.debug.print("Env:\n", .{});
         var env_iter = env.store.iterator();

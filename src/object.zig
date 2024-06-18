@@ -50,13 +50,17 @@ pub const Object = struct {
             Boolean{ .value = self.inner.asBool() }
         else if (T == Null)
             Null{}
+        else if (T == Function)
+            @ptrCast(@alignCast(self.inner.ptr))
         else
-            @ptrCast(@alignCast(self.inner.ptr));
+            @ptrCast(@alignCast(self.inner.ptr_const));
     }
 
     fn CastType(comptime T: type) type {
         return if (T == Integer or T == Boolean or T == Null)
             T
+        else if (T == Function)
+            *Function
         else
             *const T;
     }
@@ -106,7 +110,9 @@ const ObjectInner = packed union {
         _: std.meta.Int(.unsigned, @typeInfo(usize).Int.bits - 2) = 0,
         value: bool,
     },
-    ptr: *const anyopaque,
+    null: void,
+    ptr: *anyopaque,
+    ptr_const: *const anyopaque,
 
     fn isPointer(self: ObjectInner) bool {
         return self.int.tag != 1;
@@ -122,7 +128,12 @@ const ObjectInner = packed union {
         return self.bool.value;
     }
 
-    fn asPtr(self: ObjectInner) *const anyopaque {
+    fn asConstPtr(self: ObjectInner) *const anyopaque {
+        std.debug.assert(self.isPointer());
+        return self.ptr;
+    }
+
+    fn asPtr(self: ObjectInner) *anyopaque {
         std.debug.assert(self.isPointer());
         return self.ptr;
     }
@@ -198,7 +209,7 @@ pub const Null = struct {
 
     pub fn object(_: Null) Object {
         return .{
-            .inner = .{ .ptr = &{} },
+            .inner = .{ .null = {} },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
@@ -211,12 +222,12 @@ pub const Null = struct {
 pub const Function = struct {
     params: []const []const u8,
     body: BlockExpr,
-    env: *Environment,
+    env: Environment,
 
     pub const object_type: ObjectType = .function;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
-        const func: *const Function = @ptrCast(@alignCast(ctx.asPtr()));
+        const func: *const Function = @ptrCast(@alignCast(ctx.asConstPtr()));
         return .{ .owned = try std.fmt.allocPrint(
             alloc,
             std.fmt.comptimePrint("<function${{x:0>{d}}}/{{d}}>", .{@sizeOf(@TypeOf(func)) * 2}),
@@ -225,10 +236,10 @@ pub const Function = struct {
     }
 
     pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
-        return lhs.asPtr() == rhs.asPtr();
+        return lhs.asConstPtr() == rhs.asConstPtr();
     }
 
-    pub fn object(self: *const Function) Object {
+    pub fn object(self: *Function) Object {
         return .{
             .inner = .{ .ptr = self },
             .vtable = &.{
@@ -246,19 +257,19 @@ pub const ReturnValue = struct {
     pub const object_type: ObjectType = .return_value;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
-        const ret: *const ReturnValue = @ptrCast(@alignCast(ctx.asPtr()));
+        const ret: *const ReturnValue = @ptrCast(@alignCast(ctx.asConstPtr()));
         return try ret.value.inspect(alloc);
     }
 
     pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
-        const lhs_ret: *const ReturnValue = @ptrCast(@alignCast(lhs.asPtr()));
-        const rhs_ret: *const ReturnValue = @ptrCast(@alignCast(rhs.asPtr()));
+        const lhs_ret: *const ReturnValue = @ptrCast(@alignCast(lhs.asConstPtr()));
+        const rhs_ret: *const ReturnValue = @ptrCast(@alignCast(rhs.asConstPtr()));
         return lhs_ret.value.eql(rhs_ret.value);
     }
 
     pub fn object(self: *const ReturnValue) Object {
         return .{
-            .inner = .{ .ptr = self },
+            .inner = .{ .ptr_const = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
@@ -274,19 +285,19 @@ pub const BreakValue = struct {
     pub const object_type: ObjectType = .break_value;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
-        const ret: *const BreakValue = @ptrCast(@alignCast(ctx.asPtr()));
+        const ret: *const BreakValue = @ptrCast(@alignCast(ctx.asConstPtr()));
         return try ret.value.inspect(alloc);
     }
 
     pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
-        const lhs_ret: *const BreakValue = @ptrCast(@alignCast(lhs.asPtr()));
-        const rhs_ret: *const BreakValue = @ptrCast(@alignCast(rhs.asPtr()));
+        const lhs_ret: *const BreakValue = @ptrCast(@alignCast(lhs.asConstPtr()));
+        const rhs_ret: *const BreakValue = @ptrCast(@alignCast(rhs.asConstPtr()));
         return lhs_ret.value.eql(rhs_ret.value);
     }
 
     pub fn object(self: *const BreakValue) Object {
         return .{
-            .inner = .{ .ptr = self },
+            .inner = .{ .ptr_const = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
@@ -302,7 +313,7 @@ pub const EvalError = struct {
     pub const object_type: ObjectType = .eval_error;
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
-        const err: *const EvalError = @ptrCast(@alignCast(ctx.asPtr()));
+        const err: *const EvalError = @ptrCast(@alignCast(ctx.asConstPtr()));
         return .{ .owned = try std.fmt.allocPrint(
             alloc,
             "Error: {s}",
@@ -311,14 +322,14 @@ pub const EvalError = struct {
     }
 
     pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
-        const lhs_err: *const EvalError = @ptrCast(@alignCast(lhs.asPtr()));
-        const rhs_err: *const EvalError = @ptrCast(@alignCast(rhs.asPtr()));
+        const lhs_err: *const EvalError = @ptrCast(@alignCast(lhs.asConstPtr()));
+        const rhs_err: *const EvalError = @ptrCast(@alignCast(rhs.asConstPtr()));
         return std.mem.eql(u8, lhs_err.message.value(), rhs_err.message.value());
     }
 
     pub fn object(self: *const EvalError) Object {
         return .{
-            .inner = .{ .ptr = self },
+            .inner = .{ .ptr_const = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
@@ -329,7 +340,7 @@ pub const EvalError = struct {
 };
 
 pub const Environment = struct {
-    parent: ?*const Environment = null,
+    // parent: ?*const Environment = null,
     store: StringHAMT(Object),
 
     pub fn init(alloc: Allocator) !Environment {
@@ -339,12 +350,12 @@ pub const Environment = struct {
     }
 
     pub fn get(self: *const Environment, name: []const u8) ?Object {
-        return self.store.get(name) orelse if (self.parent) |parent| parent.get(name) else null;
+        return self.store.get(name); //orelse if (self.parent) |parent| parent.get(name) else null;
     }
 
     pub fn inserted(self: *const Environment, name: []const u8, value: Object) Allocator.Error!Environment {
         return .{
-            .parent = self.parent,
+            // .parent = self.parent,
             .store = try self.store.inserted(name, value, struct {
                 fn valEql(a: Object, b: Object) bool {
                     return a.eql(b);
@@ -353,20 +364,20 @@ pub const Environment = struct {
         };
     }
 
-    pub fn insert(self: *Environment, name: []const u8, value: Object) Allocator.Error!void {
-        try self.store.insert(name, value, struct {
-            fn valEql(a: Object, b: Object) bool {
-                return a.eql(b);
-            }
-        }.valEql);
-    }
+    // pub fn insert(self: *Environment, name: []const u8, value: Object) Allocator.Error!void {
+    //     try self.store.insert(name, value, struct {
+    //         fn valEql(a: Object, b: Object) bool {
+    //             return a.eql(b);
+    //         }
+    //     }.valEql);
+    // }
 
-    pub fn inherit(self: *const Environment, alloc: Allocator) Allocator.Error!Environment {
-        return Environment{
-            .parent = self,
-            .store = try StringHAMT(Object).init(alloc),
-        };
-    }
+    // pub fn inherit(self: *const Environment, alloc: Allocator) Allocator.Error!Environment {
+    //     return Environment{
+    //         .parent = self,
+    //         .store = try StringHAMT(Object).init(alloc),
+    //     };
+    // }
 
     pub fn deinit(self: Environment, alloc: Allocator) void {
         var iter = self.store.iterator();
@@ -379,68 +390,70 @@ pub const Environment = struct {
 
     pub fn iterator(self: *const Environment) Iterator {
         return Iterator{
-            .parent_env = self.parent,
+            // .parent_env = self.parent,
             .store_iter = self.store.iterator(),
         };
     }
 
     pub const Iterator = struct {
-        parent_env: ?*const Environment,
+        // parent_env: ?*const Environment,
         store_iter: StringHAMT(Object).Iterator,
 
         pub fn next(self: *Iterator) ?Object {
             return if (self.store_iter.next()) |entry|
                 entry.value
-            else if (self.parent_env) |parent_env| b: {
-                self.store_iter = parent_env.store.iterator();
-                self.parent_env = parent_env.parent;
-                break :b self.next();
-            } else null;
+                // else if (self.parent_env) |parent_env| b: {
+                //     self.store_iter = parent_env.store.iterator();
+                //     self.parent_env = parent_env.parent;
+                //     break :b self.next();
+                // }
+            else
+                null;
         }
     };
 
-    test Iterator {
-        const testing = std.testing;
+    // test Iterator {
+    //     const testing = std.testing;
 
-        var arena = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
+    //     var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    //     defer arena.deinit();
+    //     const alloc = arena.allocator();
 
-        var env = try Environment.init(alloc);
-        try env.insert("a", Object.TRUE);
-        try env.insert("b", Object.FALSE);
+    //     var env = try Environment.init(alloc);
+    //     try env.insert("a", Object.TRUE);
+    //     try env.insert("b", Object.FALSE);
 
-        var child_env = try env.inherit(alloc);
-        try child_env.insert("c", Object.NULL);
+    //     var child_env = try env.inherit(alloc);
+    //     try child_env.insert("c", Object.NULL);
 
-        const contains = struct {
-            fn contains(items: []const Object, obj: Object) bool {
-                for (items) |item| {
-                    if (item.eql(obj)) return true;
-                }
-                return false;
-            }
-        }.contains;
+    //     const contains = struct {
+    //         fn contains(items: []const Object, obj: Object) bool {
+    //             for (items) |item| {
+    //                 if (item.eql(obj)) return true;
+    //             }
+    //             return false;
+    //         }
+    //     }.contains;
 
-        var iter = env.iterator();
+    //     var iter = env.iterator();
 
-        var items = std.BoundedArray(Object, 2){};
-        try items.append(iter.next().?);
-        try items.append(iter.next().?);
-        try testing.expect(contains(items.constSlice(), Object.TRUE));
-        try testing.expect(contains(items.constSlice(), Object.FALSE));
-        try testing.expect(iter.next() == null);
+    //     var items = std.BoundedArray(Object, 2){};
+    //     try items.append(iter.next().?);
+    //     try items.append(iter.next().?);
+    //     try testing.expect(contains(items.constSlice(), Object.TRUE));
+    //     try testing.expect(contains(items.constSlice(), Object.FALSE));
+    //     try testing.expect(iter.next() == null);
 
-        var child_iter = child_env.iterator();
+    //     var child_iter = child_env.iterator();
 
-        var child_items = std.BoundedArray(Object, 3){};
-        try child_items.append(child_iter.next().?);
-        try child_items.append(child_iter.next().?);
-        try child_items.append(child_iter.next().?);
-        try testing.expect(contains(child_items.constSlice(), Object.NULL));
-        try testing.expect(contains(child_items.constSlice(), Object.TRUE));
-        try testing.expect(contains(child_items.constSlice(), Object.FALSE));
-        try testing.expect(child_iter.next() == null);
-        try testing.expect(child_items.get(0).eql(Object.NULL));
-    }
+    //     var child_items = std.BoundedArray(Object, 3){};
+    //     try child_items.append(child_iter.next().?);
+    //     try child_items.append(child_iter.next().?);
+    //     try child_items.append(child_iter.next().?);
+    //     try testing.expect(contains(child_items.constSlice(), Object.NULL));
+    //     try testing.expect(contains(child_items.constSlice(), Object.TRUE));
+    //     try testing.expect(contains(child_items.constSlice(), Object.FALSE));
+    //     try testing.expect(child_iter.next() == null);
+    //     try testing.expect(child_items.get(0).eql(Object.NULL));
+    // }
 };
