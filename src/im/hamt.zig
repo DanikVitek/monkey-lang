@@ -349,6 +349,19 @@ pub fn HashArrayMappedTrie(
                 return new_leaf_node.cast(Leaf);
             }
 
+            fn withReplacedValue(self: *const Leaf, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!*const Leaf {
+                const new_leaf = try Leaf.initUndefined(allocator, self.hash, self.len);
+                for (self.slice(), new_leaf.sliceMut()) |old_entry, *new_entry| {
+                    new_entry.* = if (ctx.eql(old_entry.key, key))
+                        .{ .key = key, .value = value }
+                    else
+                        old_entry;
+                }
+                const new_leaf_node = try allocator.create(Node);
+                new_leaf_node.* = new_leaf.node();
+                return new_leaf_node.cast(Leaf);
+            }
+
             fn initUndefined(allocator: Allocator, hash: Digest, len: usize) Allocator.Error!Leaf {
                 std.debug.assert(len > 0);
                 const mem = try allocator.alloc(Entry, len);
@@ -494,7 +507,8 @@ pub fn HashArrayMappedTrie(
                 return new_root;
             }
 
-            /// If entry for the given key already exists with a different value, it will be replaced. Otherwise
+            /// If entry for the given key already exists with a different value, it will be replaced.
+            /// Otherwise `null` is returned.
             fn addEntryAtLeaf(self: *const Path, allocator: Allocator, key: K, value: V, ctx: Context) Allocator.Error!?*const Branch {
                 std.debug.assert(self.leaf != null);
 
@@ -502,6 +516,19 @@ pub fn HashArrayMappedTrie(
                 if (existing_leaf.findValue(key, ctx)) |stored_value| {
                     if (std.meta.eql(stored_value.*, value)) return null; // if the same value already exists, do nothing
                     // TODO: implement replacing the value
+
+                    // replace the leaf with a leaf, containing the new value
+
+                    const new_leaf = try existing_leaf.withReplacedValue(allocator, key, value, ctx);
+                    const new_branch = try self.last_branch.withReplaced(
+                        allocator,
+                        .{ .value = self.chunked_hash.chunk() },
+                        new_leaf.asNode(),
+                    );
+                    const new_branch_node = try allocator.create(Node);
+                    new_branch_node.* = new_branch.node();
+                    const new_root = try self.rewrite(allocator, new_branch_node.cast(Branch));
+                    return new_root;
                 }
 
                 // If hash collision, add an extra value to the leaf
@@ -828,4 +855,45 @@ test "trie get immutably inserted entry" {
     try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = {} }), t2.getEntry("sdvx"));
     try std.testing.expectEqualDeep(@as(?*const Pair, null), t2.getEntry(""));
     try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "", .value = {} }), t3.getEntry(""));
+}
+
+test "trie get inplace-inserted entry for the same key" {
+    const HAMT = StringHashArrayMappedTrie(u32);
+    const Pair = HAMT.Entry;
+    const allocator = std.testing.allocator;
+
+    var trie = try HAMT.init(allocator);
+    defer trie.deinit(allocator);
+
+    try std.testing.expectEqualDeep(@as(?*const Pair, null), trie.getEntry("sdvx"));
+
+    try trie.insert(allocator, "sdvx", 1);
+    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), trie.getEntry("sdvx"));
+
+    try trie.insert(allocator, "sdvx", 2);
+    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 2 }), trie.getEntry("sdvx"));
+}
+
+test "trie get immutably inserted entry for the same key" {
+    const HAMT = StringHashArrayMappedTrie(u32);
+    const Pair = HAMT.Entry;
+    const allocator = std.testing.allocator;
+
+    const t1 = try HAMT.init(allocator);
+    defer t1.deinit(allocator);
+
+    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
+
+    const t2 = try t1.inserted(allocator, "sdvx", 1);
+    defer t2.deinit(allocator);
+
+    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
+    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), t2.getEntry("sdvx"));
+
+    const t3 = try t2.inserted(allocator, "sdvx", 2);
+    defer t3.deinit(allocator);
+
+    try std.testing.expectEqualDeep(@as(?*const Pair, null), t1.getEntry("sdvx"));
+    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 1 }), t2.getEntry("sdvx"));
+    try std.testing.expectEqualDeep(@as(?*const Pair, &.{ .key = "sdvx", .value = 2 }), t3.getEntry("sdvx"));
 }
