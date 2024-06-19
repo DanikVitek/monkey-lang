@@ -49,21 +49,25 @@ pub fn start(
         var lexer = try Lexer.init(source.items[line_start..]);
         var parser = Parser.init(&lexer);
         const ast = parser.parseProgram(alloc) catch |e| {
-            try err.print("Error: {s}\n", .{@errorName(e)});
+            try err.print("Parse error: {s}\n", .{@errorName(e)});
             continue;
         };
 
         const evaluated, const new_scope = try evaluator.execute(alloc, ast, scope);
-        if (!std.meta.eql(scope, new_scope)) scope.deinit();
-        scope = new_scope;
+        if (!std.meta.eql(scope, new_scope)) {
+            scope.deinit();
+            scope = new_scope;
+        }
 
-        std.debug.print("Env:\n", .{});
+        std.debug.print("Env {{\n", .{});
         var scope_iter = scope.store.iterator();
         while (scope_iter.next()) |entry| {
             const value_str = try entry.value.inspect(alloc);
             defer value_str.deinit(alloc);
-            try out.print("\t{s}: {s}\n", .{ entry.key, value_str.value() });
+            try out.print("    {s}: {s}\n", .{ entry.key, value_str });
         }
+        std.debug.print("}}\n", .{});
+
         std.debug.print(
             "Memory allocated: {d} (for sources: {d})\n",
             .{ queryCapacity(query_capacity_ctx.*), source.capacity },
@@ -71,7 +75,10 @@ pub fn start(
 
         const str = try evaluated.inspect(alloc);
         defer str.deinit(alloc);
-        try out.print("{s}\n\n", .{str.value()});
+        try out.print("{s}\n\n", .{str});
+        if (evaluated.isError()) {
+            evaluated.deinit(alloc);
+        }
     }
 }
 

@@ -25,7 +25,11 @@ pub fn execute(alloc: Allocator, ast: Ast, scope: Scope) !struct { Object, Scope
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result.deinit(alloc);
-        result, _scope = try executeStatement(alloc, stmt, _scope);
+        result, const new_scope = try executeStatement(alloc, stmt, _scope);
+        if (!std.meta.eql(_scope, new_scope)) {
+            _scope.deinit();
+            _scope = new_scope;
+        }
         switch (result.objectType()) {
             .return_value => {
                 const ret = result.cast(ReturnValue);
@@ -241,9 +245,10 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, scope: Scope
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result, const new_block_scope = try executeStatement(alloc, stmt, block_scope);
-        if (!std.meta.eql(block_scope, new_block_scope)) block_scope.deinit();
-        block_scope = new_block_scope;
-        if (result.objectType() == .return_value or result.objectType() == .eval_error) break;
+        if (!std.meta.eql(block_scope, new_block_scope)) {
+            block_scope.deinit();
+            block_scope = new_block_scope;
+        }
         switch (result.objectType()) {
             .break_value => {
                 const ret = result.cast(BreakValue);
@@ -592,10 +597,10 @@ test "eval function object" {
 
     const obj_type = evaluated.objectType();
     testing.expectEqual(.function, obj_type) catch |err| {
-        std.debug.print("Object is not function. Got .{s} ({s})\n", .{
-            @tagName(obj_type),
-            (try evaluated.inspect(alloc)).value(),
-        });
+        std.debug.print(
+            "Object is not function. Got .{s} ({s})\n",
+            .{ @tagName(obj_type), try evaluated.inspect(alloc) },
+        );
         return err;
     };
 
@@ -664,10 +669,10 @@ test "eval function application" {
 fn testIntegerObject(alloc: Allocator, obj: Object, expected: Int) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.integer, object_type) catch |err| {
-        std.debug.print("Object is not integer. Got {s} ({s})\n", .{
-            @tagName(object_type),
-            (try obj.inspect(alloc)).value(),
-        });
+        std.debug.print(
+            "Object is not integer. Got {s} ({s})\n",
+            .{ @tagName(object_type), try obj.inspect(alloc) },
+        );
         return err;
     };
     const int = obj.cast(Integer);
@@ -677,10 +682,10 @@ fn testIntegerObject(alloc: Allocator, obj: Object, expected: Int) !void {
 fn testBooleanObject(alloc: Allocator, obj: Object, expected: bool) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.boolean, object_type) catch |err| {
-        std.debug.print("Object is not boolean. Got {s} ({s})\n", .{
-            @tagName(object_type),
-            (try obj.inspect(alloc)).value(),
-        });
+        std.debug.print(
+            "Object is not boolean. Got {s} ({s})\n",
+            .{ @tagName(object_type), try obj.inspect(alloc) },
+        );
         return err;
     };
     const int = obj.cast(Boolean);
@@ -690,10 +695,10 @@ fn testBooleanObject(alloc: Allocator, obj: Object, expected: bool) !void {
 fn testVoidObject(alloc: Allocator, obj: Object) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.void, object_type) catch |err| {
-        std.debug.print("Object is not void. Got {s} ({s})\n", .{
-            @tagName(object_type),
-            (try obj.inspect(alloc)).value(),
-        });
+        std.debug.print(
+            "Object is not void. Got {s} ({s})\n",
+            .{ @tagName(object_type), try obj.inspect(alloc) },
+        );
         return err;
     };
 }
@@ -701,10 +706,10 @@ fn testVoidObject(alloc: Allocator, obj: Object) !void {
 fn testErrorObject(alloc: Allocator, obj: Object, expected: []const u8) !void {
     const object_type = obj.objectType();
     testing.expectEqual(.eval_error, object_type) catch |err| {
-        std.debug.print("Object is not eval_error. Got {s} ({s})\n", .{
-            @tagName(object_type),
-            (try obj.inspect(alloc)).value(),
-        });
+        std.debug.print(
+            "Object is not eval_error. Got {s} ({s})\n",
+            .{ @tagName(object_type), try obj.inspect(alloc) },
+        );
         return err;
     };
     const eval_err = obj.cast(EvalError);

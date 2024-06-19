@@ -8,16 +8,30 @@ pub fn MaybeOwnedSlice(comptime T: type, comptime sentinel: ?T) type {
         borrowed: Slice,
         owned: Slice,
 
-        pub fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        pub const Self = @This();
+
+        pub fn deinit(self: Self, alloc: std.mem.Allocator) void {
             switch (self) {
                 .owned => |slice| alloc.free(slice),
                 .borrowed => {},
             }
         }
 
-        pub fn value(self: @This()) Slice {
+        pub fn value(self: Self) Slice {
             return switch (self) {
-                inline else => |val| val,
+                inline else => |slice| slice,
+            };
+        }
+
+        pub fn format(self: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            return switch (self) {
+                inline else => |slice| try std.fmt.formatType(
+                    slice,
+                    fmt,
+                    options,
+                    writer,
+                    std.math.maxInt(usize),
+                ),
             };
         }
     };

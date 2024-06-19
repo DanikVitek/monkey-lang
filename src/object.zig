@@ -336,11 +336,7 @@ pub const EvalError = struct {
 
     pub fn inspect(ctx: ObjectInner, alloc: Allocator) !String {
         const err: *const EvalError = @ptrCast(@alignCast(ctx.asConstPtr()));
-        return .{ .owned = try std.fmt.allocPrint(
-            alloc,
-            "Error: {s}",
-            .{err.message.value()},
-        ) };
+        return .{ .owned = try std.fmt.allocPrint(alloc, "Error: {s}", .{err.message}) };
     }
 
     pub fn eql(lhs: ObjectInner, rhs: ObjectInner) bool {
