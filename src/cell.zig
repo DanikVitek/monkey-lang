@@ -54,7 +54,7 @@ pub fn UnsafeCell(comptime T: type) type {
         }
 
         pub inline fn get(self: *const Self) *T {
-            return @constCast(self.value);
+            return @constCast(&self.value);
         }
 
         pub inline fn getMut(self: *Self) *T {

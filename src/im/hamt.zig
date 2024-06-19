@@ -221,7 +221,7 @@ pub fn HashArrayMappedTrie(
                 const split_point = idx.toCompactIndex(self.bitmap)[0];
 
                 for (0..split_point) |i| {
-                    var sharedNode = self.base[i];
+                    const sharedNode = self.base[i];
                     new_table.base[i] = sharedNode;
                     sharedNode.addRef();
                 }
@@ -229,7 +229,7 @@ pub fn HashArrayMappedTrie(
                 new_table.base[split_point] = child;
 
                 for (split_point..old_size) |i| {
-                    var sharedNode = self.base[i];
+                    const sharedNode = self.base[i];
                     new_table.base[i + 1] = sharedNode;
                     sharedNode.addRef();
                 }
@@ -255,7 +255,7 @@ pub fn HashArrayMappedTrie(
                 const split_point = idx.toCompactIndex(self.bitmap)[0];
 
                 for (0..split_point) |i| {
-                    var sharedNode = self.base[i];
+                    const sharedNode = self.base[i];
                     new_table.base[i] = sharedNode;
                     sharedNode.addRef();
                 }
@@ -263,11 +263,21 @@ pub fn HashArrayMappedTrie(
                 new_table.base[split_point] = child;
 
                 for (split_point + 1..old_size) |i| {
-                    var sharedNode = self.base[i];
+                    const sharedNode = self.base[i];
                     new_table.base[i] = sharedNode;
                     sharedNode.addRef();
                 }
 
+                return new_table;
+            }
+
+            fn clone(self: *const Branch, allocator: Allocator) Allocator.Error!Branch {
+                const new_table = try initCapacity(allocator, self.len, self.bitmap);
+                for (0..self.len) |i| {
+                    const sharedNode = self.base[i];
+                    new_table.base[i] = sharedNode;
+                    sharedNode.addRef();
+                }
                 return new_table;
             }
 
@@ -624,6 +634,16 @@ pub fn HashArrayMappedTrie(
 
         pub inline fn deinit(self: Self) void {
             self.root.asNode().deinit(self.allocator);
+        }
+
+        pub fn clone(self: *const Self) Allocator.Error!Self {
+            const new_root = try self.root.clone(self.allocator);
+            const new_root_node = try self.allocator.create(Node);
+            new_root_node.* = new_root.node();
+            return .{
+                .root = new_root_node.cast(Branch),
+                .allocator = self.allocator,
+            };
         }
 
         pub inline fn get(self: *const Self, key: K) ?V {

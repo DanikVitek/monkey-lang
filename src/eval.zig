@@ -7,25 +7,25 @@ const Object = @import("object.zig").Object;
 const ObjectType = @import("object.zig").ObjectType;
 const Integer = @import("object.zig").Integer;
 const Boolean = @import("object.zig").Boolean;
-const Null = @import("object.zig").Null;
+const Void = @import("object.zig").Void;
 const Function = @import("object.zig").Function;
 const ReturnValue = @import("object.zig").ReturnValue;
 const BreakValue = @import("object.zig").BreakValue;
 const EvalError = @import("object.zig").EvalError;
 
-const Environment = @import("object.zig").Environment;
+const Scope = @import("object.zig").Scope;
 
 const Int = @import("object.zig").Int;
 const String = @import("lib.zig").String;
 
-pub fn execute(alloc: Allocator, ast: Ast, env: Environment) !struct { Object, Environment } {
+pub fn execute(alloc: Allocator, ast: Ast, scope: Scope) !struct { Object, Scope } {
     const program = ast.program.slice();
-    var result: Object = Object.NULL;
-    var _env = env;
+    var result: Object = Object.VOID;
+    var _scope = scope;
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result.deinit(alloc);
-        result, _env = try executeStatement(alloc, stmt, _env);
+        result, _scope = try executeStatement(alloc, stmt, _scope);
         switch (result.objectType()) {
             .return_value => {
                 const ret = result.cast(ReturnValue);
@@ -37,78 +37,86 @@ pub fn execute(alloc: Allocator, ast: Ast, env: Environment) !struct { Object, E
             else => {},
         }
     }
-    return .{ result, _env };
+    return .{ result, _scope };
 }
 
-fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: Environment) !struct { Object, Environment } {
+fn executeStatement(alloc: Allocator, stmt: Ast.Statement, scope: Scope) !struct { Object, Scope } {
     return switch (stmt) {
-        .expr => |expr| .{ try eval(alloc, expr, env), env },
+        .expr => |expr| .{ try eval(alloc, expr, scope), scope },
         .@"return" => |opt_expr| b: {
-            const obj = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
-            if (obj.isError()) break :b .{ obj, env };
+            const obj = if (opt_expr) |expr|
+                try eval(alloc, expr, scope)
+            else
+                Object.VOID;
+            if (obj.isError()) break :b .{ obj, scope };
             const ret = try alloc.create(ReturnValue);
             ret.value = obj;
-            break :b .{ ret.object(), env };
+            break :b .{ ret.object(), scope };
         },
         .@"break" => |opt_expr| b: {
-            const obj = if (opt_expr) |expr| try eval(alloc, expr, env) else Object.NULL;
-            if (obj.isError()) break :b .{ obj, env };
+            const obj = if (opt_expr) |expr|
+                try eval(alloc, expr, scope)
+            else
+                Object.VOID;
+            if (obj.isError()) break :b .{ obj, scope };
             const brk = try alloc.create(BreakValue);
             brk.value = obj;
-            break :b .{ brk.object(), env };
+            break :b .{ brk.object(), scope };
         },
         .let => |let| b: {
-            var obj = try eval(alloc, let.value, env);
-            if (obj.isError()) break :b .{ obj, env };
+            var obj = try eval(alloc, let.value, scope);
+            if (obj.isError()) break :b .{ obj, scope };
 
-            const new_env = try env.inserted(let.name, obj);
+            const new_env = try scope.inserted(let.name, obj);
 
             if (obj.isFunction()) {
                 const func: *Function = obj.cast(Function);
-                func.env = new_env;
+                func.scope.deinit();
+                func.scope = new_env;
             }
 
-            break :b .{ Object.NULL, new_env };
+            break :b .{ Object.VOID, new_env };
         },
     };
 }
 
 const Error = error{} || Allocator.Error;
 
-fn eval(alloc: Allocator, expr: Ast.Expression, env: Environment) Error!Object {
+fn eval(alloc: Allocator, expr: Ast.Expression, scope: Scope) Error!Object {
     return switch (expr) {
+        .unit => Object.VOID,
         .int => |value| (Integer{ .value = value }).object(),
         .bool => |value| nativeBoolToBooleanObject(value),
-        .ident => |name| env.get(name) orelse try newErrorFmt(alloc, "identifier not found: {s}", .{name}),
+        .ident => |name| scope.get(name) orelse try newErrorFmt(alloc, "identifier not found: {s}", .{name}),
         .unary_op => |operation| b: {
-            const operand = try eval(alloc, operation.operand.*, env);
+            const operand = try eval(alloc, operation.operand.*, scope);
             if (operand.isError()) return operand;
             break :b try evalUnaryOp(alloc, operation.op, operand);
         },
         .binary_op => |operation| b: {
-            const lhs = try eval(alloc, operation.left.*, env);
+            const lhs = try eval(alloc, operation.left.*, scope);
             if (lhs.isError()) return lhs;
-            const rhs = try eval(alloc, operation.right.*, env);
+            const rhs = try eval(alloc, operation.right.*, scope);
             if (rhs.isError()) return rhs;
             break :b try evalBinaryOp(alloc, lhs, operation.op, rhs);
         },
-        .@"if" => |conditional| try evalIfExpr(alloc, conditional, env),
-        .block => |block| try evalBlockExpr(alloc, block, env),
+        .@"if" => |conditional| try evalIfExpr(alloc, conditional, scope),
+        .block => |block| try evalBlockExpr(alloc, block, scope),
         .func => |func| {
-            const obj = try alloc.create(Function);
+            const obj: *Function = try alloc.create(Function);
             obj.params = func.params.items;
             obj.body = func.body;
-            obj.env = env;
+            obj.scope = scope;
             return obj.object();
         },
         .call => |call| b: {
-            const obj = try eval(alloc, call.callee.*, env);
+            const obj = try eval(alloc, call.callee.*, scope);
             if (obj.isError()) break :b obj;
 
             if (!obj.isFunction()) break :b try newErrorFmt(alloc, "not a function: {}", .{call.callee});
             const func: *const Function = obj.cast(Function);
 
-            const args = try evalArgs(alloc, &call.args, env);
+            const args = try evalArgs(alloc, &call.args, scope);
             defer alloc.free(args);
 
             if (args.len == 1 and args[0].isError()) break :b args[0];
@@ -123,7 +131,6 @@ fn eval(alloc: Allocator, expr: Ast.Expression, env: Environment) Error!Object {
 
             break :b try evalFunctionCall(alloc, func, args);
         },
-        inline else => |_, tag| @panic("Unimplemented (" ++ @tagName(tag) ++ ")"),
     };
 }
 
@@ -211,29 +218,31 @@ fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !
     return nativeBoolToBooleanObject(result);
 }
 
-fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: Environment) !Object {
-    const cond_obj = try eval(alloc, conditional.cond.*, env);
+fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, scope: Scope) !Object {
+    const cond_obj = try eval(alloc, conditional.cond.*, scope);
     if (cond_obj.isError()) return cond_obj;
     if (cond_obj.objectType() != .boolean) {
         return try newErrorFmt(alloc, "type mismatch: {s} in condition", .{@tagName(cond_obj.objectType())});
     }
     const cond_bool = cond_obj.cast(Boolean);
     return if (cond_bool.value)
-        try evalBlockExpr(alloc, conditional.conseq, env)
+        try evalBlockExpr(alloc, conditional.conseq, scope)
     else if (conditional.alt) |alt|
-        try evalBlockExpr(alloc, alt, env)
+        try evalBlockExpr(alloc, alt, scope)
     else
-        Object.NULL;
+        Object.VOID;
 }
 
-fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: Environment) !Object {
-    var block_env = env;
+fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, scope: Scope) !Object {
+    var block_scope = try scope.clone();
 
     const program = block.program.slice();
-    var result: Object = Object.NULL;
+    var result: Object = Object.VOID;
     for (0..program.len) |i| {
         const stmt = program.get(i);
-        result, block_env = try executeStatement(alloc, stmt, block_env);
+        result, const new_block_scope = try executeStatement(alloc, stmt, block_scope);
+        if (!std.meta.eql(block_scope, new_block_scope)) block_scope.deinit();
+        block_scope = new_block_scope;
         if (result.objectType() == .return_value or result.objectType() == .eval_error) break;
         switch (result.objectType()) {
             .break_value => {
@@ -250,13 +259,13 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: Environ
 }
 
 fn evalFunctionCall(alloc: Allocator, func: *const Function, args: []const Object) !Object {
-    var call_env = func.env;
+    var call_scope = try func.scope.clone();
 
     for (0..args.len) |i| {
-        call_env = try call_env.inserted(func.params[i], args[i]);
+        try call_scope.insert(func.params[i], args[i]);
     }
 
-    const obj = try evalBlockExpr(alloc, func.body, call_env);
+    const obj = try evalBlockExpr(alloc, func.body, call_scope);
     std.debug.assert(obj.objectType() != .break_value);
     if (obj.objectType() == .return_value) {
         const ret = obj.cast(ReturnValue);
@@ -271,13 +280,13 @@ inline fn nativeBoolToBooleanObject(value: bool) Object {
 }
 
 /// caller owns returned memory
-fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: Environment) ![]const Object {
+fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), scope: Scope) ![]const Object {
     var result = try std.ArrayList(Object).initCapacity(alloc, args.len);
     errdefer result.deinit();
 
     const slice = args.slice();
     for (0..slice.len) |i| {
-        const obj = try eval(alloc, slice.get(i), env);
+        const obj = try eval(alloc, slice.get(i), scope);
         if (obj.isError()) {
             result.clearRetainingCapacity();
             result.appendAssumeCapacity(obj);
@@ -385,16 +394,16 @@ test "eval if/else expression" {
         expected: Object,
     }{
         .{ .input = "if (true) { 10 }", .expected = (Integer{ .value = 10 }).object() },
-        .{ .input = "if (false) { 10 }", .expected = Object.NULL },
+        .{ .input = "if (false) { 10 }", .expected = Object.VOID },
         .{
             .input = "if (1) { 10 }",
             .expected = (&EvalError{ .message = .{ .borrowed = "type mismatch: integer in condition" } }).object(),
         },
         .{ .input = "if (1 < 2) { 10 }", .expected = (Integer{ .value = 10 }).object() },
-        .{ .input = "if (1 > 2) { 10 }", .expected = Object.NULL },
+        .{ .input = "if (1 > 2) { 10 }", .expected = Object.VOID },
         .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = (Integer{ .value = 20 }).object() },
         .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = (Integer{ .value = 10 }).object() },
-        .{ .input = "if (1 < 2) { return; 10 } else { 20 }; 5;", .expected = Object.NULL },
+        .{ .input = "if (1 < 2) { return; 10 } else { 20 }; 5;", .expected = Object.VOID },
         .{
             .input =
             \\let max = fn(a, b) {
@@ -402,7 +411,7 @@ test "eval if/else expression" {
             \\};
             \\max(20, 10);
             ,
-            .expected = Object.NULL,
+            .expected = Object.VOID,
         },
     };
 
@@ -421,7 +430,7 @@ test "eval if/else expression" {
                 std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
                 return err;
             },
-            .null => testNullObject(alloc, evaluated) catch |err| {
+            .void => testVoidObject(alloc, evaluated) catch |err| {
                 std.debug.print("[case {d}] \"{s}\":\n", .{ i, case.input });
                 return err;
             },
@@ -466,7 +475,7 @@ test "eval return statement" {
 
     const bare_return = "9; return; 8;";
     const evaluated = try testEval(alloc, bare_return);
-    testNullObject(alloc, evaluated) catch |err| {
+    testVoidObject(alloc, evaluated) catch |err| {
         std.debug.print("[case {d}] \"{s}\":\n", .{ cases.len, bare_return });
         return err;
     };
@@ -678,10 +687,10 @@ fn testBooleanObject(alloc: Allocator, obj: Object, expected: bool) !void {
     try testing.expectEqual(expected, int.value);
 }
 
-fn testNullObject(alloc: Allocator, obj: Object) !void {
+fn testVoidObject(alloc: Allocator, obj: Object) !void {
     const object_type = obj.objectType();
-    testing.expectEqual(.null, object_type) catch |err| {
-        std.debug.print("Object is not null. Got {s} ({s})\n", .{
+    testing.expectEqual(.void, object_type) catch |err| {
+        std.debug.print("Object is not void. Got {s} ({s})\n", .{
             @tagName(object_type),
             (try obj.inspect(alloc)).value(),
         });
@@ -711,7 +720,7 @@ fn testEval(alloc: Allocator, input: []const u8) !Object {
     const ast = try parser.parseProgram(alloc);
     // std.debug.print("{}\n", .{ast});
 
-    const env = try Environment.init(alloc);
+    const scope = try Scope.init(alloc);
 
-    return (try execute(alloc, ast, env))[0];
+    return (try execute(alloc, ast, scope))[0];
 }

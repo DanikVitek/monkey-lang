@@ -10,7 +10,7 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
 
-    try repl.start(alloc, stdin, stdout, stderr);
+    try repl.start(alloc, stdin, stdout, stderr, &arena, std.heap.ArenaAllocator.queryCapacity);
 }
 
 test {

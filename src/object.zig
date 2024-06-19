@@ -12,7 +12,7 @@ pub const Object = struct {
     inner: ObjectInner,
     vtable: *const VTable,
 
-    pub const NULL: Object = (Null{}).object();
+    pub const VOID: Object = (Void{}).object();
     pub const FALSE: Object = (Boolean{ .value = false }).object();
     pub const TRUE: Object = (Boolean{ .value = true }).object();
 
@@ -48,8 +48,8 @@ pub const Object = struct {
             Integer{ .value = self.inner.asInt() }
         else if (T == Boolean)
             Boolean{ .value = self.inner.asBool() }
-        else if (T == Null)
-            Null{}
+        else if (T == Void)
+            Void{}
         else if (T == Function)
             @ptrCast(@alignCast(self.inner.ptr))
         else
@@ -57,7 +57,7 @@ pub const Object = struct {
     }
 
     fn CastType(comptime T: type) type {
-        return if (T == Integer or T == Boolean or T == Null)
+        return if (T == Integer or T == Boolean or T == Void)
             T
         else if (T == Function)
             *Function
@@ -68,15 +68,13 @@ pub const Object = struct {
     pub fn deinit(self: Object, alloc: Allocator) void {
         if (self.objectType().isPrimitive()) return;
         switch (self.objectType()) {
-            .return_value => {
-                const ret = self.cast(ReturnValue);
-                defer alloc.destroy(ret);
-                ret.value.deinit(alloc);
-            },
-            .eval_error => {
-                const err = self.cast(EvalError);
-                defer alloc.destroy(err);
-                err.message.deinit(alloc);
+            inline .return_value, .break_value, .function, .eval_error => |tag| {
+                const impl = self.cast(tag.comptimeType());
+                defer alloc.destroy(impl);
+                if (tag == .function)
+                    impl.deinit()
+                else
+                    impl.deinit(alloc);
             },
             else => unreachable,
         }
@@ -84,7 +82,7 @@ pub const Object = struct {
 };
 
 pub const ObjectType = enum {
-    null,
+    void,
     integer,
     boolean,
     return_value,
@@ -94,8 +92,20 @@ pub const ObjectType = enum {
 
     pub fn isPrimitive(self: ObjectType) bool {
         return switch (self) {
-            .null, .integer, .boolean => true,
+            .void, .integer, .boolean => true,
             else => false,
+        };
+    }
+
+    pub fn comptimeType(comptime self: ObjectType) type {
+        return switch (self) {
+            .void => Void,
+            .integer => Integer,
+            .boolean => Boolean,
+            .return_value => ReturnValue,
+            .break_value => BreakValue,
+            .function => Function,
+            .eval_error => EvalError,
         };
     }
 };
@@ -110,7 +120,7 @@ const ObjectInner = packed union {
         _: std.meta.Int(.unsigned, @typeInfo(usize).Int.bits - 2) = 0,
         value: bool,
     },
-    null: void,
+    void: void,
     ptr: *anyopaque,
     ptr_const: *const anyopaque,
 
@@ -140,7 +150,7 @@ const ObjectInner = packed union {
 };
 
 /// The unboxed integer type used in the language.
-pub const Int: type = std.meta.Int(.signed, @typeInfo(usize).Int.bits - 1);
+pub const Int = std.meta.Int(.signed, @typeInfo(usize).Int.bits - 1);
 
 pub const Integer = struct {
     value: Int,
@@ -196,20 +206,20 @@ pub const Boolean = struct {
     }
 };
 
-pub const Null = struct {
-    pub const object_type: ObjectType = .null;
+pub const Void = struct {
+    pub const object_type: ObjectType = .void;
 
     pub fn inspect(_: ObjectInner, _: Allocator) !String {
-        return .{ .borrowed = "null" };
+        return .{ .borrowed = "()" };
     }
 
     pub fn eql(_: ObjectInner, _: ObjectInner) bool {
         return true;
     }
 
-    pub fn object(_: Null) Object {
+    pub fn object(_: Void) Object {
         return .{
-            .inner = .{ .null = {} },
+            .inner = .{ .void = {} },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
@@ -222,7 +232,7 @@ pub const Null = struct {
 pub const Function = struct {
     params: []const []const u8,
     body: BlockExpr,
-    env: Environment,
+    scope: Scope,
 
     pub const object_type: ObjectType = .function;
 
@@ -248,6 +258,10 @@ pub const Function = struct {
                 .object_type = object_type,
             },
         };
+    }
+
+    pub fn deinit(self: Function) void {
+        self.scope.deinit();
     }
 };
 
@@ -277,6 +291,10 @@ pub const ReturnValue = struct {
             },
         };
     }
+
+    pub fn deinit(self: ReturnValue, alloc: Allocator) void {
+        self.value.deinit(alloc);
+    }
 };
 
 pub const BreakValue = struct {
@@ -304,6 +322,10 @@ pub const BreakValue = struct {
                 .object_type = object_type,
             },
         };
+    }
+
+    pub fn deinit(self: BreakValue, alloc: Allocator) void {
+        self.value.deinit(alloc);
     }
 };
 
@@ -337,76 +359,67 @@ pub const EvalError = struct {
             },
         };
     }
+
+    pub fn deinit(self: EvalError, alloc: Allocator) void {
+        self.message.deinit(alloc);
+    }
 };
 
-pub const Environment = struct {
-    // parent: ?*const Environment = null,
+pub const Scope = struct {
     store: StringHAMT(Object),
 
-    pub fn init(alloc: Allocator) !Environment {
+    pub fn init(alloc: Allocator) !Scope {
         return .{
             .store = try StringHAMT(Object).init(alloc),
         };
     }
 
-    pub fn get(self: *const Environment, name: []const u8) ?Object {
-        return self.store.get(name); //orelse if (self.parent) |parent| parent.get(name) else null;
+    pub fn get(self: *const Scope, name: []const u8) ?Object {
+        return self.store.get(name);
     }
 
-    pub fn inserted(self: *const Environment, name: []const u8, value: Object) Allocator.Error!Environment {
-        return .{
-            // .parent = self.parent,
-            .store = try self.store.inserted(name, value, struct {
-                fn valEql(a: Object, b: Object) bool {
-                    return a.eql(b);
-                }
-            }.valEql),
-        };
+    pub fn inserted(self: *const Scope, name: []const u8, value: Object) Allocator.Error!Scope {
+        return .{ .store = try self.store.inserted(name, value, struct {
+            fn valEql(a: Object, b: Object) bool {
+                return a.eql(b);
+            }
+        }.valEql) };
     }
 
-    // pub fn insert(self: *Environment, name: []const u8, value: Object) Allocator.Error!void {
-    //     try self.store.insert(name, value, struct {
-    //         fn valEql(a: Object, b: Object) bool {
-    //             return a.eql(b);
-    //         }
-    //     }.valEql);
-    // }
+    pub fn insert(self: *Scope, name: []const u8, value: Object) Allocator.Error!void {
+        try self.store.insert(name, value, struct {
+            fn valEql(a: Object, b: Object) bool {
+                return a.eql(b);
+            }
+        }.valEql);
+    }
 
-    // pub fn inherit(self: *const Environment, alloc: Allocator) Allocator.Error!Environment {
-    //     return Environment{
-    //         .parent = self,
-    //         .store = try StringHAMT(Object).init(alloc),
-    //     };
-    // }
-
-    pub fn deinit(self: Environment, alloc: Allocator) void {
-        var iter = self.store.iterator();
-        while (iter.next()) |entry| {
-            entry.value.deinit(alloc);
-        }
+    pub fn deinit(
+        self: Scope,
+        // alloc: Allocator,
+    ) void {
+        // var iter = self.store.iterator();
+        // while (iter.next()) |entry| {
+        //     entry.value.deinit(alloc);
+        // }
 
         self.store.deinit();
     }
 
-    pub fn iterator(self: *const Environment) Iterator {
-        return Iterator{
-            // .parent_env = self.parent,
-            .store_iter = self.store.iterator(),
-        };
+    pub fn clone(self: *const Scope) !Scope {
+        return .{ .store = try self.store.clone() };
+    }
+
+    pub fn iterator(self: *const Scope) Iterator {
+        return Iterator{ .store_iter = self.store.iterator() };
     }
 
     pub const Iterator = struct {
-        // parent_env: ?*const Environment,
         store_iter: StringHAMT(Object).Iterator,
 
         pub fn next(self: *Iterator) ?Object {
             return if (self.store_iter.next()) |entry|
                 entry.value
-                // else if (self.parent_env) |parent_env| b: {
-                //     self.store_iter = parent_env.store.iterator();
-                //     self.parent_env = parent_env.parent;
-                //     break :b self.next();
-                // }
             else
                 null;
         }

@@ -22,7 +22,7 @@ pub fn Rc(comptime T: type) type {
             return .{ .ptr = self.ptr };
         }
 
-        pub fn deinit(self: *Self, allocator: Allocator) void {
+        pub fn deinit(self: *const Self, allocator: Allocator) void {
             const rc_inner = self.inner().rcInnerPtr();
 
             rc_inner.decStrong();

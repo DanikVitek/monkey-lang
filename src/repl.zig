@@ -10,18 +10,25 @@ const Token = @import("token.zig").Token;
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 const evaluator = @import("eval.zig");
-const Environment = @import("object.zig").Environment;
+const Scope = @import("object.zig").Scope;
 
 const pretty = @import("pretty");
 
 const PROMPT = ">> ";
 
-pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
+pub fn start(
+    alloc: Allocator,
+    in: Reader,
+    out: Writer,
+    err: Writer,
+    query_capacity_ctx: anytype,
+    queryCapacity: fn (@typeInfo(@TypeOf(query_capacity_ctx)).Pointer.child) usize,
+) !void {
     var source = ArrayList(u8).init(alloc);
     var line_start: usize = 0;
     var line_end: usize = 0;
 
-    var env = try Environment.init(alloc);
+    var scope = try Scope.init(alloc);
 
     while (true) {
         try err.writeAll(PROMPT);
@@ -46,15 +53,21 @@ pub fn start(alloc: Allocator, in: Reader, out: Writer, err: Writer) !void {
             continue;
         };
 
-        const evaluated, env = try evaluator.execute(alloc, ast, env);
+        const evaluated, const new_scope = try evaluator.execute(alloc, ast, scope);
+        if (!std.meta.eql(scope, new_scope)) scope.deinit();
+        scope = new_scope;
 
         std.debug.print("Env:\n", .{});
-        var env_iter = env.store.iterator();
-        while (env_iter.next()) |entry| {
+        var scope_iter = scope.store.iterator();
+        while (scope_iter.next()) |entry| {
             const value_str = try entry.value.inspect(alloc);
             defer value_str.deinit(alloc);
             try out.print("\t{s}: {s}\n", .{ entry.key, value_str.value() });
         }
+        std.debug.print(
+            "Memory allocated: {d} (for sources: {d})\n",
+            .{ queryCapacity(query_capacity_ctx.*), source.capacity },
+        );
 
         const str = try evaluated.inspect(alloc);
         defer str.deinit(alloc);
