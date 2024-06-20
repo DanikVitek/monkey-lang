@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 const Log2Int = std.math.Log2Int;
@@ -89,17 +90,36 @@ pub fn HashArrayMappedTrie(
         allocator: Allocator,
 
         const Node = struct {
-            ref_count: AtomicUsize = AtomicUsize.init(1),
+            ref_count: RefCount = if (builtin.single_threaded) 1 else AtomicUsize.init(1),
             impl: NodeImpl,
 
+            const RefCount = if (builtin.single_threaded)
+                usize
+            else
+                AtomicUsize;
+
             inline fn addRef(self: *const Node) void {
-                const ref_count: *AtomicUsize = @constCast(&self.ref_count);
-                _ = ref_count.fetchAdd(1, .release);
+                const ref_count: *RefCount = @constCast(&self.ref_count);
+
+                if (builtin.single_threaded)
+                    ref_count.* += 1
+                else
+                    _ = ref_count.fetchAdd(1, .release);
             }
 
             fn deinit(self: *const Node, allocator: Allocator) void {
-                const ref_count: *AtomicUsize = @constCast(&self.ref_count);
-                if (ref_count.fetchSub(1, .release) == 1) {
+                const ref_count: *RefCount = @constCast(&self.ref_count);
+
+                if (builtin.single_threaded) {
+                    ref_count.* -= 1;
+                    if (ref_count.* == 0) {
+                        switch (self.impl) {
+                            .branch => |branch| branch.deinit(allocator),
+                            .leaf => |leaf| leaf.deinit(allocator),
+                        }
+                        allocator.destroy(self);
+                    }
+                } else if (ref_count.fetchSub(1, .release) == 1) {
                     @fence(.acquire);
                     switch (self.impl) {
                         .branch => |branch| branch.deinit(allocator),

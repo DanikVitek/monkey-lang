@@ -21,8 +21,8 @@ pub fn start(
     in: Reader,
     out: Writer,
     err: Writer,
-    query_capacity_ctx: anytype,
-    queryCapacity: fn (@typeInfo(@TypeOf(query_capacity_ctx)).Pointer.child) usize,
+    // query_capacity_ctx: anytype,
+    // queryCapacity: fn (@typeInfo(@TypeOf(query_capacity_ctx)).Pointer.child) usize,
 ) !void {
     var source = ArrayList(u8).init(alloc);
     var line_start: usize = 0;
@@ -68,10 +68,10 @@ pub fn start(
         }
         std.debug.print("}}\n", .{});
 
-        std.debug.print(
-            "Memory allocated: {d} (for sources: {d})\n",
-            .{ queryCapacity(query_capacity_ctx.*), source.capacity },
-        );
+        // std.debug.print(
+        //     "Memory allocated: {d} (for sources: {d})\n",
+        //     .{ queryCapacity(query_capacity_ctx.*), source.capacity },
+        // );
 
         const str = try evaluated.inspect(alloc);
         defer str.deinit(alloc);

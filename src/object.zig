@@ -44,25 +44,21 @@ pub const Object = struct {
 
     pub inline fn cast(self: Object, comptime T: type) CastType(T) {
         std.debug.assert(self.objectType() == T.object_type);
-        return if (T == Integer)
-            Integer{ .value = self.inner.asInt() }
-        else if (T == Boolean)
-            Boolean{ .value = self.inner.asBool() }
-        else if (T == Void)
-            Void{}
-        else if (T == Function)
-            @ptrCast(@alignCast(self.inner.ptr))
-        else
-            @ptrCast(@alignCast(self.inner.ptr_const));
+        return switch (T) {
+            Integer => Integer{ .value = self.inner.asInt() },
+            Boolean => Boolean{ .value = self.inner.asBool() },
+            Void => Void{},
+            Function => @ptrCast(@alignCast(self.inner.ptr)),
+            else => @ptrCast(@alignCast(self.inner.ptr_const)),
+        };
     }
 
     fn CastType(comptime T: type) type {
-        return if (T == Integer or T == Boolean or T == Void)
-            T
-        else if (T == Function)
-            *Function
-        else
-            *const T;
+        return switch (T) {
+            Integer, Boolean, Void => T,
+            Function => *Function,
+            else => *const T,
+        };
     }
 
     pub fn deinit(self: Object, alloc: Allocator) void {

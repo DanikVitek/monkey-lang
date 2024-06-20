@@ -71,15 +71,15 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, scope: Scope) !struct
             var obj = try eval(alloc, let.value, scope);
             if (obj.isError()) break :b .{ obj, scope };
 
-            const new_env = try scope.inserted(let.name, obj);
+            const new_scope = try scope.inserted(let.name, obj);
 
             if (obj.isFunction()) {
                 const func: *Function = obj.cast(Function);
                 func.scope.deinit();
-                func.scope = new_env;
+                func.scope = try new_scope.clone();
             }
 
-            break :b .{ Object.VOID, new_env };
+            break :b .{ Object.VOID, new_scope };
         },
     };
 }
@@ -110,7 +110,7 @@ fn eval(alloc: Allocator, expr: Ast.Expression, scope: Scope) Error!Object {
             const obj: *Function = try alloc.create(Function);
             obj.params = func.params.items;
             obj.body = func.body;
-            obj.scope = scope;
+            obj.scope = try scope.clone();
             return obj.object();
         },
         .call => |call| b: {
