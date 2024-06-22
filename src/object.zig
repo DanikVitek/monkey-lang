@@ -1,12 +1,15 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
-const trait = @import("lib.zig").trait;
+const Allocator = std.mem.Allocator;
+const AtomicUsize = std.atomic.Value(usize);
+
 const String = @import("lib.zig").String;
 
 const BlockExpr = @import("Ast.zig").Expression.BlockExpr;
 
 const StringHAMT = @import("im/hamt.zig").StringHashArrayMappedTrie;
+const Rc = @import("rc.zig").Rc;
 
 pub const Object = struct {
     inner: ObjectInner,
@@ -19,6 +22,7 @@ pub const Object = struct {
     const VTable = struct {
         inspectFn: *const fn (ctx: ObjectInner, alloc: Allocator) Allocator.Error!String,
         eqlFn: *const fn (lhs: ObjectInner, rhs: ObjectInner) bool,
+        copyFn: *const fn (ctx: ObjectInner) ObjectInner,
         object_type: ObjectType,
     };
 
@@ -61,18 +65,21 @@ pub const Object = struct {
         };
     }
 
+    pub fn copy(self: *const Object) Object {
+        return .{
+            .inner = self.vtable.copyFn(self.inner),
+            .vtable = self.vtable,
+        };
+    }
+
     pub fn deinit(self: Object, alloc: Allocator) void {
-        if (self.objectType().isPrimitive()) return;
         switch (self.objectType()) {
-            inline .return_value, .break_value, .function, .eval_error => |tag| {
-                const impl = self.cast(tag.comptimeType());
-                defer alloc.destroy(impl);
-                if (tag == .function)
-                    impl.deinit()
-                else
-                    impl.deinit(alloc);
+            inline .function, .eval_error => |tag| {
+                const impl = self.cast(tag.Type());
+                impl.deinit(alloc);
             },
-            else => unreachable,
+            .return_value, .break_value => unreachable,
+            else => return,
         }
     }
 };
@@ -93,7 +100,7 @@ pub const ObjectType = enum {
         };
     }
 
-    pub fn comptimeType(comptime self: ObjectType) type {
+    pub fn Type(comptime self: ObjectType) type {
         return switch (self) {
             .void => Void,
             .integer => Integer,
@@ -162,12 +169,17 @@ pub const Integer = struct {
         return lhs.asInt() == rhs.asInt();
     }
 
+    pub fn copy(ctx: ObjectInner) ObjectInner {
+        return ctx;
+    }
+
     pub fn object(self: Integer) Object {
         return .{
             .inner = .{ .int = .{ .value = self.value } },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
+                .copyFn = copy,
                 .object_type = object_type,
             },
         };
@@ -190,12 +202,17 @@ pub const Boolean = struct {
         return lhs_bool == rhs_bool;
     }
 
+    pub fn copy(ctx: ObjectInner) ObjectInner {
+        return ctx;
+    }
+
     pub fn object(self: Boolean) Object {
         return .{
             .inner = .{ .bool = .{ .value = self.value } },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
+                .copyFn = copy,
                 .object_type = object_type,
             },
         };
@@ -213,12 +230,17 @@ pub const Void = struct {
         return true;
     }
 
+    pub fn copy(ctx: ObjectInner) ObjectInner {
+        return ctx;
+    }
+
     pub fn object(_: Void) Object {
         return .{
             .inner = .{ .void = {} },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
+                .copyFn = copy,
                 .object_type = object_type,
             },
         };
@@ -228,7 +250,10 @@ pub const Void = struct {
 pub const Function = struct {
     params: []const []const u8,
     body: BlockExpr,
-    scope: Scope,
+    env: Environment,
+    ref_count: usize = if (builtin.single_threaded) 1 else AtomicUsize.init(1),
+
+    const RefCount = if (builtin.single_threaded) usize else AtomicUsize;
 
     pub const object_type: ObjectType = .function;
 
@@ -245,19 +270,43 @@ pub const Function = struct {
         return lhs.asConstPtr() == rhs.asConstPtr();
     }
 
+    pub fn copy(ctx: ObjectInner) ObjectInner {
+        const func: *Function = @ptrCast(@alignCast(ctx.asPtr()));
+        if (builtin.single_threaded)
+            func.ref_count += 1
+        else
+            _ = func.ref_count.fetchAdd(1, .release);
+        return ctx;
+    }
+
     pub fn object(self: *Function) Object {
         return .{
             .inner = .{ .ptr = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
+                .copyFn = copy,
                 .object_type = object_type,
             },
         };
     }
 
-    pub fn deinit(self: Function) void {
-        self.scope.deinit();
+    pub fn deinit(self: *Function, alloc: Allocator) void {
+        if (builtin.single_threaded) {
+            const prev_ref_count: usize = self.ref_count;
+            self.ref_count = prev_ref_count - 1;
+            if (prev_ref_count == 1) {
+                self.env.deinit();
+                alloc.destroy(self);
+            }
+        } else {
+            const ref_count: *AtomicUsize = &self.ref_count;
+            if (ref_count.fetchSub(1, .release) == 1) {
+                ref_count.fence(.acquire);
+                self.env.deinit();
+                alloc.destroy(self);
+            }
+        }
     }
 };
 
@@ -277,19 +326,25 @@ pub const ReturnValue = struct {
         return lhs_ret.value.eql(rhs_ret.value);
     }
 
+    pub fn copy(_: ObjectInner) noreturn {
+        unreachable;
+    }
+
     pub fn object(self: *const ReturnValue) Object {
         return .{
             .inner = .{ .ptr_const = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
+                .copyFn = copy,
                 .object_type = object_type,
             },
         };
     }
 
-    pub fn deinit(self: ReturnValue, alloc: Allocator) void {
+    pub fn deinit(self: *const ReturnValue, alloc: Allocator) void {
         self.value.deinit(alloc);
+        alloc.destroy(self);
     }
 };
 
@@ -309,19 +364,25 @@ pub const BreakValue = struct {
         return lhs_ret.value.eql(rhs_ret.value);
     }
 
+    pub fn copy(_: ObjectInner) noreturn {
+        unreachable;
+    }
+
     pub fn object(self: *const BreakValue) Object {
         return .{
             .inner = .{ .ptr_const = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
+                .copyFn = copy,
                 .object_type = object_type,
             },
         };
     }
 
-    pub fn deinit(self: BreakValue, alloc: Allocator) void {
+    pub fn deinit(self: *const BreakValue, alloc: Allocator) void {
         self.value.deinit(alloc);
+        alloc.destroy(self);
     }
 };
 
@@ -341,36 +402,42 @@ pub const EvalError = struct {
         return std.mem.eql(u8, lhs_err.message.value(), rhs_err.message.value());
     }
 
+    pub fn copy(_: ObjectInner) noreturn {
+        unreachable;
+    }
+
     pub fn object(self: *const EvalError) Object {
         return .{
             .inner = .{ .ptr_const = self },
             .vtable = &.{
                 .inspectFn = inspect,
                 .eqlFn = eql,
+                .copyFn = copy,
                 .object_type = object_type,
             },
         };
     }
 
-    pub fn deinit(self: EvalError, alloc: Allocator) void {
+    pub fn deinit(self: *const EvalError, alloc: Allocator) void {
         self.message.deinit(alloc);
+        alloc.destroy(self);
     }
 };
 
-pub const Scope = struct {
+pub const Environment = struct {
     store: StringHAMT(Object),
 
-    pub fn init(alloc: Allocator) !Scope {
+    pub fn init(alloc: Allocator) !Environment {
         return .{
             .store = try StringHAMT(Object).init(alloc),
         };
     }
 
-    pub fn get(self: *const Scope, name: []const u8) ?Object {
+    pub fn get(self: *const Environment, name: []const u8) ?Object {
         return self.store.get(name);
     }
 
-    pub fn inserted(self: *const Scope, name: []const u8, value: Object) Allocator.Error!Scope {
+    pub fn inserted(self: *const Environment, name: []const u8, value: Object) Allocator.Error!Environment {
         return .{ .store = try self.store.inserted(name, value, struct {
             fn valEql(a: Object, b: Object) bool {
                 return a.eql(b);
@@ -378,7 +445,7 @@ pub const Scope = struct {
         }.valEql) };
     }
 
-    pub fn insert(self: *Scope, name: []const u8, value: Object) Allocator.Error!void {
+    pub fn insert(self: *Environment, name: []const u8, value: Object) Allocator.Error!void {
         try self.store.insert(name, value, struct {
             fn valEql(a: Object, b: Object) bool {
                 return a.eql(b);
@@ -386,23 +453,30 @@ pub const Scope = struct {
         }.valEql);
     }
 
-    pub fn deinit(
-        self: Scope,
-        // alloc: Allocator,
-    ) void {
+    pub fn deinit(self: Environment) void {
         // var iter = self.store.iterator();
         // while (iter.next()) |entry| {
         //     entry.value.deinit(alloc);
         // }
 
-        self.store.deinit();
+        const Closure = struct {
+            alloc: Allocator,
+
+            fn cleanup(ctx: @This(), _: []const u8, value: Object) void {
+                value.deinit(ctx.alloc);
+            }
+        };
+        self.store.deinitCleanup(
+            Closure{ .alloc = self.store.allocator },
+            Closure.cleanup,
+        );
     }
 
-    pub fn clone(self: *const Scope) !Scope {
+    pub fn clone(self: *const Environment) !Environment {
         return .{ .store = try self.store.clone() };
     }
 
-    pub fn iterator(self: *const Scope) Iterator {
+    pub fn iterator(self: *const Environment) Iterator {
         return Iterator{ .store_iter = self.store.iterator() };
     }
 

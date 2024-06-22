@@ -13,22 +13,22 @@ const ReturnValue = @import("object.zig").ReturnValue;
 const BreakValue = @import("object.zig").BreakValue;
 const EvalError = @import("object.zig").EvalError;
 
-const Scope = @import("object.zig").Scope;
+const Environment = @import("object.zig").Environment;
 
 const Int = @import("object.zig").Int;
 const String = @import("lib.zig").String;
 
-pub fn execute(alloc: Allocator, ast: Ast, scope: Scope) !struct { Object, Scope } {
+pub fn execute(alloc: Allocator, ast: Ast, env: Environment) !struct { Object, Environment } {
     const program = ast.program.slice();
     var result: Object = Object.VOID;
-    var _scope = scope;
+    var _env = env;
     for (0..program.len) |i| {
         const stmt = program.get(i);
         result.deinit(alloc);
-        result, const new_scope = try executeStatement(alloc, stmt, _scope);
-        if (!std.meta.eql(_scope, new_scope)) {
-            _scope.deinit();
-            _scope = new_scope;
+        result, const new_env = try executeStatement(alloc, stmt, _env);
+        if (!std.meta.eql(_env, new_env)) {
+            _env.deinit();
+            _env = new_env;
         }
         switch (result.objectType()) {
             .return_value => {
@@ -38,89 +38,90 @@ pub fn execute(alloc: Allocator, ast: Ast, scope: Scope) !struct { Object, Scope
                 break;
             },
             .eval_error => break,
+            .break_value => unreachable,
             else => {},
         }
     }
-    return .{ result, _scope };
+    return .{ result, _env };
 }
 
-fn executeStatement(alloc: Allocator, stmt: Ast.Statement, scope: Scope) !struct { Object, Scope } {
+fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: Environment) !struct { Object, Environment } {
     return switch (stmt) {
-        .expr => |expr| .{ try eval(alloc, expr, scope), scope },
+        .expr => |expr| .{ try eval(alloc, expr, env), env },
         .@"return" => |opt_expr| b: {
             const obj = if (opt_expr) |expr|
-                try eval(alloc, expr, scope)
+                try eval(alloc, expr, env)
             else
                 Object.VOID;
-            if (obj.isError()) break :b .{ obj, scope };
+            if (obj.isError()) break :b .{ obj, env };
             const ret = try alloc.create(ReturnValue);
             ret.value = obj;
-            break :b .{ ret.object(), scope };
+            break :b .{ ret.object(), env };
         },
         .@"break" => |opt_expr| b: {
             const obj = if (opt_expr) |expr|
-                try eval(alloc, expr, scope)
+                try eval(alloc, expr, env)
             else
                 Object.VOID;
-            if (obj.isError()) break :b .{ obj, scope };
+            if (obj.isError()) break :b .{ obj, env };
             const brk = try alloc.create(BreakValue);
             brk.value = obj;
-            break :b .{ brk.object(), scope };
+            break :b .{ brk.object(), env };
         },
         .let => |let| b: {
-            var obj = try eval(alloc, let.value, scope);
-            if (obj.isError()) break :b .{ obj, scope };
+            var obj = try eval(alloc, let.value, env);
+            if (obj.isError()) break :b .{ obj, env };
 
-            const new_scope = try scope.inserted(let.name, obj);
+            const new_env = try env.inserted(let.name, obj);
 
             if (obj.isFunction()) {
                 const func: *Function = obj.cast(Function);
-                func.scope.deinit();
-                func.scope = try new_scope.clone();
+                func.env.deinit();
+                func.env = try new_env.clone();
             }
 
-            break :b .{ Object.VOID, new_scope };
+            break :b .{ Object.VOID, new_env };
         },
     };
 }
 
 const Error = error{} || Allocator.Error;
 
-fn eval(alloc: Allocator, expr: Ast.Expression, scope: Scope) Error!Object {
+fn eval(alloc: Allocator, expr: Ast.Expression, env: Environment) Error!Object {
     return switch (expr) {
         .unit => Object.VOID,
         .int => |value| (Integer{ .value = value }).object(),
         .bool => |value| nativeBoolToBooleanObject(value),
-        .ident => |name| scope.get(name) orelse try newErrorFmt(alloc, "identifier not found: {s}", .{name}),
+        .ident => |name| env.get(name) orelse try newErrorFmt(alloc, "identifier not found: {s}", .{name}),
         .unary_op => |operation| b: {
-            const operand = try eval(alloc, operation.operand.*, scope);
+            const operand = try eval(alloc, operation.operand.*, env);
             if (operand.isError()) return operand;
             break :b try evalUnaryOp(alloc, operation.op, operand);
         },
         .binary_op => |operation| b: {
-            const lhs = try eval(alloc, operation.left.*, scope);
+            const lhs = try eval(alloc, operation.left.*, env);
             if (lhs.isError()) return lhs;
-            const rhs = try eval(alloc, operation.right.*, scope);
+            const rhs = try eval(alloc, operation.right.*, env);
             if (rhs.isError()) return rhs;
             break :b try evalBinaryOp(alloc, lhs, operation.op, rhs);
         },
-        .@"if" => |conditional| try evalIfExpr(alloc, conditional, scope),
-        .block => |block| try evalBlockExpr(alloc, block, scope),
+        .@"if" => |conditional| try evalIfExpr(alloc, conditional, env),
+        .block => |block| try evalBlockExpr(alloc, block, env),
         .func => |func| {
             const obj: *Function = try alloc.create(Function);
             obj.params = func.params.items;
             obj.body = func.body;
-            obj.scope = try scope.clone();
+            obj.env = try env.clone();
             return obj.object();
         },
         .call => |call| b: {
-            const obj = try eval(alloc, call.callee.*, scope);
+            const obj = try eval(alloc, call.callee.*, env);
             if (obj.isError()) break :b obj;
 
             if (!obj.isFunction()) break :b try newErrorFmt(alloc, "not a function: {}", .{call.callee});
             const func: *const Function = obj.cast(Function);
 
-            const args = try evalArgs(alloc, &call.args, scope);
+            const args = try evalArgs(alloc, &call.args, env);
             defer alloc.free(args);
 
             if (args.len == 1 and args[0].isError()) break :b args[0];
@@ -222,32 +223,32 @@ fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !
     return nativeBoolToBooleanObject(result);
 }
 
-fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, scope: Scope) !Object {
-    const cond_obj = try eval(alloc, conditional.cond.*, scope);
+fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: Environment) !Object {
+    const cond_obj = try eval(alloc, conditional.cond.*, env);
     if (cond_obj.isError()) return cond_obj;
     if (cond_obj.objectType() != .boolean) {
         return try newErrorFmt(alloc, "type mismatch: {s} in condition", .{@tagName(cond_obj.objectType())});
     }
     const cond_bool = cond_obj.cast(Boolean);
     return if (cond_bool.value)
-        try evalBlockExpr(alloc, conditional.conseq, scope)
+        try evalBlockExpr(alloc, conditional.conseq, env)
     else if (conditional.alt) |alt|
-        try evalBlockExpr(alloc, alt, scope)
+        try evalBlockExpr(alloc, alt, env)
     else
         Object.VOID;
 }
 
-fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, scope: Scope) !Object {
-    var block_scope = try scope.clone();
+fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: Environment) !Object {
+    var block_env = try env.clone();
 
     const program = block.program.slice();
     var result: Object = Object.VOID;
     for (0..program.len) |i| {
         const stmt = program.get(i);
-        result, const new_block_scope = try executeStatement(alloc, stmt, block_scope);
-        if (!std.meta.eql(block_scope, new_block_scope)) {
-            block_scope.deinit();
-            block_scope = new_block_scope;
+        result, const new_block_env = try executeStatement(alloc, stmt, block_env);
+        if (!std.meta.eql(block_env, new_block_env)) {
+            block_env.deinit();
+            block_env = new_block_env;
         }
         switch (result.objectType()) {
             .break_value => {
@@ -264,13 +265,13 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, scope: Scope
 }
 
 fn evalFunctionCall(alloc: Allocator, func: *const Function, args: []const Object) !Object {
-    var call_scope = try func.scope.clone();
+    var call_env = try func.env.clone();
 
     for (0..args.len) |i| {
-        try call_scope.insert(func.params[i], args[i]);
+        try call_env.insert(func.params[i], args[i]);
     }
 
-    const obj = try evalBlockExpr(alloc, func.body, call_scope);
+    const obj = try evalBlockExpr(alloc, func.body, call_env);
     std.debug.assert(obj.objectType() != .break_value);
     if (obj.objectType() == .return_value) {
         const ret = obj.cast(ReturnValue);
@@ -285,13 +286,13 @@ inline fn nativeBoolToBooleanObject(value: bool) Object {
 }
 
 /// caller owns returned memory
-fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), scope: Scope) ![]const Object {
+fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: Environment) ![]const Object {
     var result = try std.ArrayList(Object).initCapacity(alloc, args.len);
     errdefer result.deinit();
 
     const slice = args.slice();
     for (0..slice.len) |i| {
-        const obj = try eval(alloc, slice.get(i), scope);
+        const obj = try eval(alloc, slice.get(i), env);
         if (obj.isError()) {
             result.clearRetainingCapacity();
             result.appendAssumeCapacity(obj);
@@ -725,7 +726,7 @@ fn testEval(alloc: Allocator, input: []const u8) !Object {
     const ast = try parser.parseProgram(alloc);
     // std.debug.print("{}\n", .{ast});
 
-    const scope = try Scope.init(alloc);
+    const scope = try Environment.init(alloc);
 
     return (try execute(alloc, ast, scope))[0];
 }

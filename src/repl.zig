@@ -10,7 +10,7 @@ const Token = @import("token.zig").Token;
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 const evaluator = @import("eval.zig");
-const Scope = @import("object.zig").Scope;
+const Scope = @import("object.zig").Environment;
 
 const pretty = @import("pretty");
 

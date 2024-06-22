@@ -107,23 +107,36 @@ pub fn HashArrayMappedTrie(
                     _ = ref_count.fetchAdd(1, .release);
             }
 
-            fn deinit(self: *const Node, allocator: Allocator) void {
+            inline fn deinit(self: *const Node, allocator: Allocator) void {
+                const cleanup = struct {
+                    fn cleanup(_: void, _: K, _: V) void {}
+                }.cleanup;
+                self.deinitCleanup(allocator, {}, cleanup);
+            }
+
+            fn deinitCleanup(
+                self: *const Node,
+                allocator: Allocator,
+                cleanup_ctx: anytype,
+                comptime cleanupFn: fn (ctx: @TypeOf(cleanup_ctx), key: K, value: V) void,
+            ) void {
                 const ref_count: *RefCount = @constCast(&self.ref_count);
 
                 if (builtin.single_threaded) {
-                    ref_count.* -= 1;
-                    if (ref_count.* == 0) {
+                    const prev_ref_count: usize = ref_count.*;
+                    ref_count.* = prev_ref_count - 1;
+                    if (prev_ref_count == 1) {
                         switch (self.impl) {
-                            .branch => |branch| branch.deinit(allocator),
-                            .leaf => |leaf| leaf.deinit(allocator),
+                            .branch => |branch| branch.deinitCleanup(allocator, cleanup_ctx, cleanupFn),
+                            .leaf => |leaf| leaf.deinitCleanup(allocator, cleanup_ctx, cleanupFn),
                         }
                         allocator.destroy(self);
                     }
                 } else if (ref_count.fetchSub(1, .release) == 1) {
-                    @fence(.acquire);
+                    ref_count.fence(.acquire);
                     switch (self.impl) {
-                        .branch => |branch| branch.deinit(allocator),
-                        .leaf => |leaf| leaf.deinit(allocator),
+                        .branch => |branch| branch.deinitCleanup(allocator, cleanup_ctx, cleanupFn),
+                        .leaf => |leaf| leaf.deinitCleanup(allocator, cleanup_ctx, cleanupFn),
                     }
                     allocator.destroy(self);
                 }
@@ -214,11 +227,23 @@ pub fn HashArrayMappedTrie(
                 return table;
             }
 
-            fn deinit(self: Branch, allocator: Allocator) void {
+            inline fn deinit(self: Branch, allocator: Allocator) void {
+                const cleanup = struct {
+                    fn cleanup(_: void, _: K, _: V) void {}
+                }.cleanup;
+                self.deinitCleanup(allocator, undefined, cleanup);
+            }
+
+            fn deinitCleanup(
+                self: Branch,
+                allocator: Allocator,
+                cleanup_ctx: anytype,
+                comptime cleanupFn: fn (ctx: @TypeOf(cleanup_ctx), key: K, value: V) void,
+            ) void {
                 std.debug.assert(self.len == @popCount(self.bitmap));
                 const slice = self.base[0..self.len];
                 for (slice) |stored_node| {
-                    stored_node.deinit(allocator);
+                    stored_node.deinitCleanup(allocator, cleanup_ctx, cleanupFn);
                 }
                 allocator.free(slice);
             }
@@ -408,7 +433,25 @@ pub fn HashArrayMappedTrie(
             /// Clears the memory of the entries
             ///
             /// Caller must deinit the memory, _refereed_ in entries, manually
-            pub inline fn deinit(self: Leaf, allocator: Allocator) void {
+            inline fn deinit(self: Leaf, allocator: Allocator) void {
+                const cleanup = struct {
+                    fn cleanup(_: void, _: K, _: V) void {}
+                }.cleanup;
+                self.deinitCleanup(allocator, undefined, cleanup);
+            }
+
+            /// Clears the memory of the entries
+            ///
+            /// Caller must deinit the memory, _refereed_ in entries, manually
+            fn deinitCleanup(
+                self: Leaf,
+                allocator: Allocator,
+                cleanup_ctx: anytype,
+                comptime cleanupFn: fn (ctx: @TypeOf(cleanup_ctx), key: K, value: V) void,
+            ) void {
+                for (self.slice()) |entry| {
+                    cleanupFn(cleanup_ctx, entry.key, entry.value);
+                }
                 allocator.free(self.slice());
             }
         };
@@ -654,6 +697,14 @@ pub fn HashArrayMappedTrie(
 
         pub inline fn deinit(self: Self) void {
             self.root.asNode().deinit(self.allocator);
+        }
+
+        pub inline fn deinitCleanup(
+            self: Self,
+            cleanup_ctx: anytype,
+            comptime cleanupFn: fn (ctx: @TypeOf(cleanup_ctx), key: K, value: V) void,
+        ) void {
+            self.root.asNode().deinitCleanup(self.allocator, cleanup_ctx, cleanupFn);
         }
 
         pub fn clone(self: *const Self) Allocator.Error!Self {
