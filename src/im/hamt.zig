@@ -93,10 +93,7 @@ pub fn HashArrayMappedTrie(
             ref_count: RefCount = if (builtin.single_threaded) 1 else AtomicUsize.init(1),
             impl: NodeImpl,
 
-            const RefCount = if (builtin.single_threaded)
-                usize
-            else
-                AtomicUsize;
+            const RefCount = if (builtin.single_threaded) usize else AtomicUsize;
 
             inline fn addRef(self: *const Node) void {
                 const ref_count: *RefCount = @constCast(&self.ref_count);

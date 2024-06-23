@@ -454,15 +454,11 @@ pub const Environment = struct {
     }
 
     pub fn deinit(self: Environment) void {
-        // var iter = self.store.iterator();
-        // while (iter.next()) |entry| {
-        //     entry.value.deinit(alloc);
-        // }
-
         const Closure = struct {
             alloc: Allocator,
 
-            fn cleanup(ctx: @This(), _: []const u8, value: Object) void {
+            fn cleanup(ctx: @This(), name: []const u8, value: Object) void {
+                _ = name;
                 value.deinit(ctx.alloc);
             }
         };
@@ -472,67 +468,7 @@ pub const Environment = struct {
         );
     }
 
-    pub fn clone(self: *const Environment) !Environment {
+    pub fn clone(self: *const Environment) Allocator.Error!Environment {
         return .{ .store = try self.store.clone() };
     }
-
-    pub fn iterator(self: *const Environment) Iterator {
-        return Iterator{ .store_iter = self.store.iterator() };
-    }
-
-    pub const Iterator = struct {
-        store_iter: StringHAMT(Object).Iterator,
-
-        pub fn next(self: *Iterator) ?Object {
-            return if (self.store_iter.next()) |entry|
-                entry.value
-            else
-                null;
-        }
-    };
-
-    // test Iterator {
-    //     const testing = std.testing;
-
-    //     var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    //     defer arena.deinit();
-    //     const alloc = arena.allocator();
-
-    //     var env = try Environment.init(alloc);
-    //     try env.insert("a", Object.TRUE);
-    //     try env.insert("b", Object.FALSE);
-
-    //     var child_env = try env.inherit(alloc);
-    //     try child_env.insert("c", Object.NULL);
-
-    //     const contains = struct {
-    //         fn contains(items: []const Object, obj: Object) bool {
-    //             for (items) |item| {
-    //                 if (item.eql(obj)) return true;
-    //             }
-    //             return false;
-    //         }
-    //     }.contains;
-
-    //     var iter = env.iterator();
-
-    //     var items = std.BoundedArray(Object, 2){};
-    //     try items.append(iter.next().?);
-    //     try items.append(iter.next().?);
-    //     try testing.expect(contains(items.constSlice(), Object.TRUE));
-    //     try testing.expect(contains(items.constSlice(), Object.FALSE));
-    //     try testing.expect(iter.next() == null);
-
-    //     var child_iter = child_env.iterator();
-
-    //     var child_items = std.BoundedArray(Object, 3){};
-    //     try child_items.append(child_iter.next().?);
-    //     try child_items.append(child_iter.next().?);
-    //     try child_items.append(child_iter.next().?);
-    //     try testing.expect(contains(child_items.constSlice(), Object.NULL));
-    //     try testing.expect(contains(child_items.constSlice(), Object.TRUE));
-    //     try testing.expect(contains(child_items.constSlice(), Object.FALSE));
-    //     try testing.expect(child_iter.next() == null);
-    //     try testing.expect(child_items.get(0).eql(Object.NULL));
-    // }
 };

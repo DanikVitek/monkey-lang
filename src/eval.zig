@@ -14,6 +14,7 @@ const BreakValue = @import("object.zig").BreakValue;
 const EvalError = @import("object.zig").EvalError;
 
 const Environment = @import("object.zig").Environment;
+const ScopedValues = std.ArrayList(Object);
 
 const Int = @import("object.zig").Int;
 const String = @import("lib.zig").String;
@@ -45,12 +46,17 @@ pub fn execute(alloc: Allocator, ast: Ast, env: Environment) !struct { Object, E
     return .{ result, _env };
 }
 
-fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: Environment) !struct { Object, Environment } {
+fn executeStatement(
+    alloc: Allocator,
+    stmt: Ast.Statement,
+    env: Environment,
+    // scoped_values: *ScopedValues,
+) !struct { Object, Environment } {
     return switch (stmt) {
-        .expr => |expr| .{ try eval(alloc, expr, env), env },
+        .expr => |expr| .{ try eval(alloc, expr, &env), env },
         .@"return" => |opt_expr| b: {
             const obj = if (opt_expr) |expr|
-                try eval(alloc, expr, env)
+                try eval(alloc, expr, &env)
             else
                 Object.VOID;
             if (obj.isError()) break :b .{ obj, env };
@@ -60,7 +66,7 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: Environment) !st
         },
         .@"break" => |opt_expr| b: {
             const obj = if (opt_expr) |expr|
-                try eval(alloc, expr, env)
+                try eval(alloc, expr, &env)
             else
                 Object.VOID;
             if (obj.isError()) break :b .{ obj, env };
@@ -69,12 +75,12 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: Environment) !st
             break :b .{ brk.object(), env };
         },
         .let => |let| b: {
-            var obj = try eval(alloc, let.value, env);
+            var obj = try eval(alloc, let.value, &env);
             if (obj.isError()) break :b .{ obj, env };
 
             const new_env = try env.inserted(let.name, obj);
 
-            if (obj.isFunction()) {
+            if (obj.isFunction() and let.value == .func) {
                 const func: *Function = obj.cast(Function);
                 func.env.deinit();
                 func.env = try new_env.clone();
@@ -87,7 +93,7 @@ fn executeStatement(alloc: Allocator, stmt: Ast.Statement, env: Environment) !st
 
 const Error = error{} || Allocator.Error;
 
-fn eval(alloc: Allocator, expr: Ast.Expression, env: Environment) Error!Object {
+fn eval(alloc: Allocator, expr: Ast.Expression, env: *const Environment) Error!Object {
     return switch (expr) {
         .unit => Object.VOID,
         .int => |value| (Integer{ .value = value }).object(),
@@ -223,7 +229,7 @@ fn evalEqualityOp(lhs: Object, operator: Ast.Expression.BinaryOp, rhs: Object) !
     return nativeBoolToBooleanObject(result);
 }
 
-fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: Environment) !Object {
+fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: *const Environment) !Object {
     const cond_obj = try eval(alloc, conditional.cond.*, env);
     if (cond_obj.isError()) return cond_obj;
     if (cond_obj.objectType() != .boolean) {
@@ -238,8 +244,9 @@ fn evalIfExpr(alloc: Allocator, conditional: Ast.Expression.IfExpr, env: Environ
         Object.VOID;
 }
 
-fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: Environment) !Object {
+fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: *const Environment) !Object {
     var block_env = try env.clone();
+    defer block_env.deinit();
 
     const program = block.program.slice();
     var result: Object = Object.VOID;
@@ -266,12 +273,13 @@ fn evalBlockExpr(alloc: Allocator, block: Ast.Expression.BlockExpr, env: Environ
 
 fn evalFunctionCall(alloc: Allocator, func: *const Function, args: []const Object) !Object {
     var call_env = try func.env.clone();
+    defer call_env.deinit();
 
     for (0..args.len) |i| {
         try call_env.insert(func.params[i], args[i]);
     }
 
-    const obj = try evalBlockExpr(alloc, func.body, call_env);
+    const obj = try evalBlockExpr(alloc, func.body, &call_env);
     std.debug.assert(obj.objectType() != .break_value);
     if (obj.objectType() == .return_value) {
         const ret = obj.cast(ReturnValue);
@@ -286,7 +294,7 @@ inline fn nativeBoolToBooleanObject(value: bool) Object {
 }
 
 /// caller owns returned memory
-fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: Environment) ![]const Object {
+fn evalArgs(alloc: Allocator, args: *const std.MultiArrayList(Ast.Expression), env: *const Environment) ![]const Object {
     var result = try std.ArrayList(Object).initCapacity(alloc, args.len);
     errdefer result.deinit();
 
@@ -651,6 +659,23 @@ test "eval function application" {
             \\max(20, 10);
             ,
             .expected = 10,
+        },
+        .{
+            .input =
+            \\let fib = fn(a, b, n) {
+            \\    if (n == 0) { a } else { fib(b, a + b, n - 1) }
+            \\};
+            \\fib(0, 1, 10);
+            ,
+            .expected = 55,
+        },
+        .{
+            .input =
+            \\let adder = fn(a) { fn(b) { a + b } };
+            \\let addTwo = adder(2);
+            \\addTwo(3);
+            ,
+            .expected = 5,
         },
     };
 

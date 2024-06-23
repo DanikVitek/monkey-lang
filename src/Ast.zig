@@ -73,7 +73,7 @@ pub const Statement = union(enum) {
     pub fn endsWithSemicolon(self: *const Statement) bool {
         return switch (self.*) {
             .expr => |expr| switch (std.meta.activeTag(expr)) {
-                .block, .@"if" => false,
+                .block, .@"if", .func => false,
                 else => true,
             },
             else => true,
